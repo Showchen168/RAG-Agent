@@ -1,0 +1,216 @@
+---
+title: 技能系統
+description: 讓 AI 不只能回答，還能執行程式碼並產出文件
+---
+
+## 概述
+
+技能系統讓 AI 不只能回答問題，還能實際執行程式碼並產出各種格式的文件。所有程式碼都在 Docker 容器中安全執行，網路完全隔離。
+
+| 項目 | 值 |
+|------|-----|
+| AI 模型 | `gemini-3-pro-preview`（意圖 / 研究 / 工程） |
+| 路由超時 | `maxDuration = 300` 秒 |
+| 前端超時 | 60 秒（超時後自動切換輪詢） |
+| 輪詢間隔 | 每 5 秒，最長 5 分鐘 |
+
+## 三階段執行流程
+
+### Phase 0：意圖判斷
+
+AI 分析使用者需求是否足夠清晰。
+
+| 項目 | 值 |
+|------|-----|
+| 模型 | `gemini-3-pro-preview` |
+| maxOutputTokens | 16,384 |
+| 判斷標準 | 主題/重點是否明確、資訊是否充分 |
+
+**分支邏輯：**
+- 需求充分 → 輸出 `__READY_TO_GENERATE__`，進入 Phase 1
+- 需求不足 → 回傳釐清訊息（支援 Markdown），中止後續流程
+
+### Phase 0.5：RAG 知識庫查詢（可選）
+
+通過 Phase 0 後，系統會自動查詢使用者的知識庫（`executeAdaptiveRAG`），將相關內容注入後續階段的 prompt 中。查詢失敗時 graceful degradation，不中斷主流程。
+
+### Phase 1：研究員 + 撰稿員
+
+AI 主動搜尋最新資料並撰寫完整報告。
+
+| 項目 | 值 |
+|------|-----|
+| 模型 | `gemini-3-pro-preview` |
+| maxOutputTokens | 32,768 |
+| 第一階段：內容撰寫 | 根據提取的事實，撰寫初步報告內容 |
+| 系統提示 | `WRITER_SYSTEM_PROMPT` |
+| 支援搜尋 | 根據需求觸發 Google Search API |
+
+**內容長度對照：**
+
+| 使用者指定頁數 | 目標字數 |
+|-------------|---------|
+| 1 頁 | 500-600 字 |
+| 5 頁 | 2,500-3,000 字 |
+| 10 頁 | 5,000-6,000 字 |
+| 20 頁 | 10,000-12,000 字 |
+
+**報告結構：**
+- 摘要（200-300 字）
+- 5-8 個章節
+- 至少 3 個數據表格
+- 參考資料
+
+### Phase 2：排版工程師
+
+基於 Phase 1 的報告（前 1,500 字摘錄）產出：
+
+| 項目 | 值 |
+|------|-----|
+| 模型 | `gemini-3-pro-preview` |
+| maxOutputTokens | 65,536 |
+
+**輸出內容：**
+1. 說明文字（繁體中文）
+2. 修改建議（`:::suggestions` 語法，3 項）
+3. 封面配置 JSON（標題、副標題、日期、檔名）
+
+Phase 2 輸出與 Phase 1 報告以 `---FULL_REPORT_CONTENT---` 分隔符合併，傳入 Docker 容器。
+
+## 技能配置結構
+
+每個技能由 `SkillConfig` 定義：
+
+| 欄位 | 類型 | 說明 |
+|------|------|------|
+| `name` | string | 技能唯一識別名 |
+| `displayName` | string | UI 顯示名稱（2-50 字）|
+| `description` | string | 描述（10-200 字）|
+| `icon` | string | lucide-react icon 名稱 |
+| `category` | string | `document` / `data` / `creative` / `utility` |
+| `input.type` | string | `context`（對話歷史）/ `user`（使用者輸入）/ `both` |
+| `output.fileType` | string | 如 `docx`、`xlsx` |
+| `output.mimeType` | string | MIME 類型 |
+| `output.previewFormat` | string | `markdown` / `plaintext` / `image` |
+| `runtime.baseImage` | string | Docker 映像（如 `nexusmind-skill-runtime:node-20`）|
+| `runtime.timeout` | number | 秒數 |
+| `runtime.maxMemory` | string | 如 `512m`、`1g` |
+
+## Docker 沙箱執行
+
+### 支援的語言
+
+| 語言 | Runtime | 映像 |
+|------|---------|------|
+| JavaScript | Node.js 20 | `nexusmind-skill-runtime:node-20` |
+| Python | Python 3.11 | `python:3.11` |
+
+### Runtime 映像預裝套件
+
+技能 Runtime 基於 `nikolaik/python-nodejs:python3.11-nodejs20-slim`：
+
+- **npm**：`docx`（Word 文件生成）
+- **Python**：`defusedxml`、`lxml`
+- **Node 模組路徑**：`NODE_PATH=/usr/local/skill-modules/node_modules`
+
+### 容器安全設定
+
+| 設定 | 值 | 說明 |
+|------|-----|------|
+| NetworkMode | `none` | 完全無網路 |
+| CapDrop | `ALL` | 移除所有 Linux capability |
+| MemorySwap | 等於 Memory | 禁用 swap |
+| Binds | `/scripts:ro` | 腳本目錄唯讀掛載 |
+
+### 映像白名單
+
+只允許以下映像前綴：`node:`、`python:`、`alpine:`、`ubuntu:`、`nexusmind-skill-runtime:`
+
+## 輸出格式
+
+| 格式 | 說明 | 實作方式 |
+|------|------|---------|
+| **DOCX** | Word 文件 | 內嵌 docx v9 API，Markdown → DOCX 轉換 |
+| **PDF** | PDF 文件 | Playwright headless 渲染 |
+| **PNG** | 圖片 | 程式碼生成 |
+| **JSON** | 結構化資料 | 程式碼生成 |
+
+### Markdown → DOCX 轉換
+
+JavaScript 技能會自動生成 `_converter.js` 腳本，支援：
+- `#` / `##` / `###` / `####` 標題
+- Markdown 表格
+- `**粗體**` 和 `*斜體*`
+- 自動換頁和段落間距
+- 封面頁（標題、副標題、日期）
+
+## AI 生成技能
+
+你可以透過自然語言描述建立新技能。
+
+### 生成限制
+
+| 參數 | 值 |
+|------|-----|
+| 模型 | `gemini-2.0-flash` |
+| 對話歷史上限 | 30,000 字元 |
+| 單則訊息上限 | 2,000 字元 |
+| displayName | 2-50 字 |
+| description | 10-200 字 |
+| prompt_template | 20-5,000 字 |
+
+### 釐清問題
+
+當需求不明確時，AI 會產生 3-5 個釐清問題：
+
+| 問題類型 | 說明 |
+|---------|------|
+| `text` | 自由文字輸入 |
+| `select` | 單選 |
+| `multiselect` | 多選 |
+
+## 進度動畫
+
+技能執行時顯示 6 個階段的進度展示：
+
+| 時間閾值 | 階段 | 圖示 |
+|---------|------|------|
+| 0 秒 | 初始化技能環境 | Settings |
+| 5 秒 | 分析輸入需求 | Search |
+| 15 秒 | 搜尋相關資料 | Globe |
+| 40 秒 | 生成報告內容 | FileText |
+| 90 秒 | 執行文件處理 | Cog |
+| 150 秒 | 最終整理中 | Sparkles |
+
+進度使用 Braille Unicode 旋轉微調器（`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`，80ms 刷新）。
+
+## 輪詢機制
+
+當前端 60 秒超時或網路錯誤時，自動切換為輪詢模式：
+
+```
+GET /api/skills/execute/status?messageId=xxx
+
+回應狀態：
+  - "processing" → 訊息 content 為空，繼續輪詢
+  - "failed"     → 訊息為「（技能執行失敗）」
+  - "completed"  → 回傳附件 + 訊息內容
+```
+
+| 參數 | 值 |
+|------|-----|
+| 輪詢間隔 | 5 秒 |
+| 最長輪詢時間 | 300 秒（5 分鐘）|
+
+## 技能管理 API
+
+| 操作 | 端點 |
+|------|------|
+| 列出技能 | `GET /api/skills` |
+| 建立技能 | `POST /api/skills` |
+| 更新技能 | `PUT /api/skills/:id` |
+| 刪除技能 | `DELETE /api/skills/:id` |
+| 執行技能 | `POST /api/skills/execute` |
+| 查詢狀態 | `GET /api/skills/execute/status` |
+| 釐清問題 | `POST /api/skills/clarify` |
+| 生成技能 | `POST /api/skills/generate` |

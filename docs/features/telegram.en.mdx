@@ -1,0 +1,146 @@
+---
+title: Telegram Bot
+description: Interact with NexusMind AI anytime, anywhere via Telegram
+---
+
+## Overview
+
+Through the Telegram Bot, you can interact with NexusMind's AI on your phone anytime without opening a browser. The Bot uses the same Adaptive RAG system as the web version, with answers based on your knowledge base.
+
+| Item | Value |
+|------|-------|
+| AI Model | `gemini-flash` |
+| maxOutputTokens | 16,384 |
+| Route Timeout | `maxDuration = 120` seconds |
+| Conversation History | Last 10 messages |
+| Idle Auto-Create New Conversation | 30 minutes |
+
+## Setup Steps
+
+1. Create a Telegram Bot via [@BotFather](https://t.me/BotFather) and get the Token
+2. Find the Telegram settings section in NexusMind's **Settings** page
+3. Enter the Bot Token; system validates and stores it encrypted with **AES-256-GCM**
+4. Click "Register Webhook" — system automatically sets up the Webhook endpoint
+5. Chat with the Bot in Telegram and use the `/link` command to bind your account
+
+## Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Show welcome message and command help |
+| `/start link_CODE` | Deep Link binding (triggered from web link) |
+| `/link CODE` | Manually enter binding code to bind account |
+| `/unlink` | Unbind Telegram from NexusMind account |
+| `/newchat` | Create new conversation, update `default_conversation_id` |
+
+## Account Binding Flow
+
+### Deep Link Binding (Recommended)
+
+```
+1. Click "Bind Telegram" on web
+2. System generates 6-digit binding code, stores in telegram_link_codes table
+3. User jumps to Telegram, auto-sends /start link_CODE
+4. Bot verifies binding code, associates telegram_chat_id ↔ user_id
+```
+
+### Manual Binding
+
+```
+1. Web shows binding code
+2. User sends /link CODE in Telegram
+3. Bot verifies and binds
+```
+
+### Auto User Creation
+
+If a Telegram user is not yet bound, the system automatically:
+1. Creates an Auth user (Email: `telegram_CHATID@nexusmind.bot`)
+2. Creates a Profile (`preferred_model: gemini-flash`)
+3. Creates a default conversation (title: "Telegram Chat")
+4. Creates a `telegram_users` mapping
+
+## AI Response Flow
+
+```
+1. Verify Webhook Secret
+2. Show "typing..." (sendChatAction: typing)
+3. Get/create user mapping
+4. Save user message to messages table
+5. Load conversation history (last 10)
+6. Execute Adaptive RAG (vector + BM25 + LightRAG)
+7. Build system prompt (date + persona + platform limits + knowledge base)
+8. generateText (non-streaming, gemini-flash)
+9. Save AI response to messages table
+10. Send reply + RAG citation sources
+```
+
+### Message Format Processing
+
+| Processing | Description |
+|------------|-------------|
+| Markdown → HTML | `**bold**` → `<b>`, `*italic*` → `<i>`, code blocks preserved |
+| Message Splitting | Telegram limit 4,096 chars, preferring splits at line breaks |
+| Citation Sources | Appended at end of reply message |
+
+### DNS Resolution (NAS Environment)
+
+In Docker containers, Telegram API may encounter DNS resolution issues. System uses custom DNS resolver:
+
+- Prefers `8.8.8.8` and `1.1.1.1`
+- Forces IPv4 (`family: 4`)
+
+## Security Mechanisms
+
+### Token Encryption
+
+| Item | Value |
+|------|-------|
+| Algorithm | AES-256-GCM |
+| IV Length | 12 bytes |
+| Auth Tag Length | 16 bytes |
+| Encryption Key | `BOT_TOKEN_ENCRYPTION_KEY` env var (32-byte hex = 64 chars) |
+| Storage Format | `iv + authTag + ciphertext` (hex concatenation) |
+
+### Token Masking
+
+API responses mask the Token: `1234***:***xyz` (first 4 + last 3 chars).
+
+### Webhook Verification
+
+Each Webhook request must include `x-telegram-bot-api-secret-token` header:
+
+1. Priority: verify from DB `telegram_bot_config.webhook_secret`
+2. Fallback to `TELEGRAM_WEBHOOK_SECRET` environment variable
+3. Development mode: if neither is set, allow all requests
+
+### Webhook Registration Flow
+
+```
+1. Get enabled Bot Token
+2. Generate webhook_secret
+   - Prefer TELEGRAM_WEBHOOK_SECRET env var
+   - Fallback: crypto.randomUUID() (hyphens removed)
+3. Call Telegram API setWebhook
+   - allowed_updates: ['message']
+4. Update DB: webhook_url, webhook_secret, webhook_registered_at
+```
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Bot Token (fallback source, DB encrypted version preferred) |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook verification secret |
+| `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | Bot @username (for frontend link display) |
+| `BOT_TOKEN_ENCRYPTION_KEY` | AES encryption key (32-byte hex) |
+
+## Telegram API Endpoints
+
+| Operation | Endpoint | Description |
+|-----------|----------|-------------|
+| Webhook Receiver | `POST /api/telegram/webhook` | Handles all Bot messages |
+| Bind Account | `POST /api/telegram/link` | Verify binding code |
+| Unbind | `POST /api/telegram/unlink` | Delete mapping |
+| Bot Config | `GET/POST /api/telegram/bot-config` | Token management, Webhook registration |
+| Webhook Status | `GET /api/telegram/webhook-status` | Query Webhook info |

@@ -1,0 +1,131 @@
+---
+title: Prompt Templates
+description: Custom prompt templates, 10 built-in AI role presets, favorites and sharing
+---
+
+## Overview
+
+NexusMind provides a comprehensive prompt template system with 10 built-in professional AI role presets, supporting custom templates, variable interpolation, public sharing, and favorites.
+
+## Built-in AI Roles
+
+The system includes 10 professional roles covering common work scenarios:
+
+| Role | Expertise | Use Cases |
+|------|-----------|-----------|
+| Technical Consultant | Architecture design, performance optimization | Technical decisions, Code Review |
+| Creative Copywriter | Marketing psychology, platform adaptation | Social media posts, ad copy |
+| Data Analysis Expert | Statistical methods, business insights | Data analysis, report interpretation |
+| Code Reviewer | SOLID principles, security | PR Review, code quality |
+| Learning Mentor | Feynman technique, knowledge scaffolding | Learning new concepts, teaching |
+| Product Manager Assistant | PRD, prioritization, OKR | Product planning, requirements analysis |
+| Presentation Master | Pyramid principle, storytelling | Slide creation, proposals |
+| UI/UX Design Consultant | Human-centered design, accessibility | Interface design, UX optimization |
+| SEO Optimization Expert | Technical/Content/Off-page SEO | Website optimization, content strategy |
+| Agile Coach | Scrum/Kanban, team maturity | Project management, process improvement |
+
+## Using Prompt Templates
+
+### In Conversations
+
+1. Click the "Prompts" button on the chat page
+2. Browse or search available templates
+3. Click a template to automatically apply its System Prompt
+4. If the template contains variables, fill in values before starting the conversation
+
+### Template Variables
+
+Templates support dynamic variable interpolation:
+
+```json
+{
+  "variables": [
+    { "name": "topic", "placeholder": "Enter topic" },
+    { "name": "audience", "placeholder": "Target audience" }
+  ]
+}
+```
+
+The system prompts you to fill in variable values, which are automatically substituted into the System Prompt.
+
+## Custom Templates
+
+### Creating a New Template
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Template name |
+| `description` | No | Description |
+| `icon` | No | Icon (lucide-react icon name, default `Sparkles`) |
+| `category` | Yes | Category (default `custom`) |
+| `system_prompt` | Yes | System prompt content |
+| `is_public` | No | Whether to share publicly (default `false`) |
+| `tags` | No | Tag array (for search and categorization) |
+| `variables` | No | Variable definition array |
+
+### Example
+
+```json
+{
+  "name": "Tech Blog Writer",
+  "description": "Specialized in writing technical blog posts balancing depth and readability",
+  "icon": "PenTool",
+  "category": "custom",
+  "system_prompt": "You are an experienced technical blog author. For the topic {{topic}}, write an article targeting {{audience}}...",
+  "is_public": true,
+  "tags": ["writing", "technical", "blog"],
+  "variables": [
+    { "name": "topic", "placeholder": "Technical topic" },
+    { "name": "audience", "placeholder": "Beginner/Intermediate/Advanced" }
+  ]
+}
+```
+
+## Sharing & Favorites
+
+### Public Sharing
+
+Set a template to `is_public: true` to make it visible and usable by all users.
+
+### Favorites
+
+- Only public templates can be favorited
+- Favorited templates appear in the "My Favorites" category
+- Favoriting is a toggle: click again to unfavorite
+
+### Usage Statistics
+
+Each time a template is used, `usage_count` automatically increments by 1, used for recommendation ranking and popularity statistics.
+
+## Assistant Presets
+
+In addition to prompt templates, NexusMind provides **AI Assistant Presets** — predefined conversation roles:
+
+| Preset | Description |
+|--------|-------------|
+| General Assistant | General-purpose AI assistant |
+| Writing Assistant | Focused on writing and editing |
+| Coding Assistant | Focused on code development and debugging |
+| Analysis Assistant | Focused on data analysis and interpretation |
+| Creative Assistant | Focused on creative ideation and brainstorming |
+
+Differences between assistant presets and prompt templates:
+
+| Aspect | Assistant Presets | Prompt Templates |
+|--------|-----------------|-----------------|
+| Quantity | 5 fixed | Unlimited custom |
+| Editable | No | Yes |
+| Variables | None | Supported |
+| Sharing | Available to all users | Optional public sharing |
+| Purpose | Quick AI role switching | Fine-grained AI behavior control |
+
+## API Endpoints
+
+| Operation | Endpoint | Description |
+|-----------|----------|-------------|
+| List templates | `GET /api/prompts` | Supports `scope` parameter: `mine`/`public`/`featured`/`chat` |
+| Create template | `POST /api/prompts` | Create custom template |
+| Update template | `PUT /api/prompts/:id` | Update your own template |
+| Delete template | `DELETE /api/prompts/:id` | Delete template |
+| Usage stats | `POST /api/prompts/:id/use` | `usage_count += 1` |
+| Toggle favorite | `POST /api/prompts/:id/favorite` | Toggle favorite status |

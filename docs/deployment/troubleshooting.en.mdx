@@ -1,0 +1,223 @@
+---
+title: Troubleshooting
+description: Common issues, error diagnosis, and solutions
+---
+
+## Docker Deployment Issues
+
+### Container Startup Failure
+
+**Symptom:** Containers keep restarting after `docker compose up`
+
+| Check Item | Command | Description |
+|------------|---------|-------------|
+| Container logs | `docker logs nexusmind-app` | View error messages |
+| Health status | `docker compose ps` | Check service status |
+| Environment variables | `docker exec nexusmind-app env` | Verify variable injection |
+
+**Common Causes:**
+
+1. **Missing required variables in `.env.production`** — Ensure `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` are set
+2. **Build Args not passed** — `NEXT_PUBLIC_*` variables must be passed via `--build-arg` during `docker build`
+3. **Microservices not ready** — The app waits for marker, lightrag, and skill-executor health checks to pass
+
+### Build Args Issues
+
+**Symptom:** Supabase connection fails after page loads
+
+`NEXT_PUBLIC_*` variables are baked into the frontend bundle at build time and cannot be overridden at runtime:
+
+```bash
+# Correct: Pass during build
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-supabase.com \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-key \
+  -t nexusmind-app:latest .
+
+# Wrong: Setting only in .env.production is not enough
+# NEXT_PUBLIC_* must exist at build time
+```
+
+### Cross-Platform Build (Apple Silicon → AMD64)
+
+Building images for NAS (AMD64) on Mac M-series chips:
+
+```bash
+docker buildx build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
+  -t nexusmind-app:latest --load .
+```
+
+## Supabase Connection Issues
+
+### Authentication Failure
+
+**Symptom:** Redirected back to login page after logging in
+
+| Cause | Solution |
+|-------|----------|
+| Cookie name mismatch | Verify `SUPABASE_SERVER_URL` and `NEXT_PUBLIC_SUPABASE_URL` hostnames are correct |
+| Session expired | Clear browser cookies and log in again |
+| Service Role Key incorrect | Verify `SUPABASE_SERVICE_ROLE_KEY` matches your Supabase project |
+
+### Docker Environment Cannot Reach Supabase
+
+**Symptom:** Server-side API requests fail, browser-side works fine
+
+| Scenario | Configuration |
+|----------|--------------|
+| Supabase Cloud | `SUPABASE_SERVER_URL` not needed (uses `NEXT_PUBLIC_*`) |
+| Self-hosted (same Docker network) | `SUPABASE_SERVER_URL=http://supabase-kong:8000` |
+| Self-hosted (same NAS) | `SUPABASE_SERVER_URL=http://192.168.x.x:54321` |
+
+### Migration Issues
+
+```bash
+# View unapplied migrations
+npx supabase migration list
+
+# Apply only new migrations (preserves data)
+npx supabase migration up --local
+
+# Important: Never use supabase db reset (it deletes all data)
+```
+
+## Microservice Issues
+
+### Health Check API
+
+```bash
+# Check all microservice status
+curl http://localhost:3000/api/services/health
+
+# Individual checks
+curl http://localhost:8001/health  # Marker
+curl http://localhost:8002/health  # LightRAG
+curl http://localhost:8003/health  # Skill Executor
+```
+
+### Marker Service Issues
+
+**Symptom:** Document content is empty after upload
+
+| Cause | Solution |
+|-------|----------|
+| Marker container not started | `docker compose up -d marker` |
+| Insufficient memory | Increase Marker container memory limit (default 1 GB) |
+| Scanned PDF | Normal behavior, system automatically falls back to Gemini Vision OCR |
+
+**Fallback Chain:** Marker → Gemini Vision OCR → Built-in Parser (pdf-parse / mammoth)
+
+### LightRAG Service Issues
+
+**Symptom:** Knowledge graph queries return no results
+
+| Cause | Solution |
+|-------|----------|
+| LightRAG not yet indexed | Wait for indexing to complete after uploading documents (check logs) |
+| Timeout (default 5 seconds) | Large knowledge base queries may time out, this is normal |
+| Volume missing | Verify `lightrag-data` volume exists |
+
+### Skill Executor Issues
+
+**Symptom:** Skill execution timeout or failure
+
+| Cause | Solution |
+|-------|----------|
+| Docker socket permissions | Verify `/var/run/docker.sock` is mounted with proper permissions |
+| Runtime image not built | Run `docker build -t nexusmind-skill-runtime:node-20 ./skill-executor-service/runtime` |
+| Insufficient memory | Default 512 MB for skills, complex computations may need more |
+
+## AI Chat Issues
+
+### RAG Returns No Results
+
+**Symptom:** AI responses don't cite the knowledge base
+
+| Cause | Solution |
+|-------|----------|
+| Document not enabled | Check that document `enabled` status is on in the Knowledge page |
+| Embedding vectors not generated | Check if `document_embeddings` table has corresponding records |
+| Similarity too low | Default threshold 0.6, RSS sources 0.45 — query may differ too much from document content |
+| RAG timeout | Total timeout 12 seconds — may trigger if Supabase / LightRAG responds slowly |
+
+### Streaming Interruption
+
+**Symptom:** AI response stops mid-way
+
+| Cause | Solution |
+|-------|----------|
+| Reverse proxy timeout | Set Nginx `proxy_read_timeout 300s` |
+| NAS environment | System has built-in 15-second heartbeat mechanism, ensure using latest version |
+| Unstable network | Check Docker container network settings |
+
+### Memory System
+
+**Symptom:** AI doesn't remember previous conversations
+
+The memory system automatically extracts preferences and behaviors from conversations:
+
+- Memories accumulate gradually, requiring multiple conversations to take effect
+- Memories have deduplication (Bigram Jaccard similarity >= 0.6 is considered duplicate)
+- View saved memories in the Settings page
+
+## Telegram Bot Issues
+
+### Bot Not Responding
+
+| Cause | Solution |
+|-------|----------|
+| Webhook not registered | Click "Register Webhook" on the Settings page |
+| Token incorrect | Re-enter Bot Token |
+| DNS resolution failed | Docker environments may need custom DNS (system has built-in 8.8.8.8 / 1.1.1.1) |
+| Message exceeds 4,096 characters | System auto-splits, but very long replies may be delayed |
+
+### Webhook Verification Failed
+
+```bash
+# Check webhook status
+curl http://localhost:3000/api/telegram/webhook-status
+```
+
+Verify that the `x-telegram-bot-api-secret-token` header matches the `webhook_secret` in the database.
+
+## Scheduled Tasks (Cron)
+
+### Knowledge Source Monitoring
+
+```bash
+# Manual trigger
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  http://localhost:3000/api/cron/check-sources
+
+# NAS Task Scheduler setup
+# Schedule: Every hour
+# Command: curl -s -H "Authorization: Bearer YOUR_SECRET" http://localhost:3000/api/cron/check-sources
+```
+
+**`CRON_SECRET` not set** → API returns 401. Set it in `.env.production`.
+
+## Performance Optimization
+
+### Database
+
+- Ensure pgvector HNSW index is built (handled automatically by migration)
+- For large document collections (>1000), consider increasing `ef_construction` parameter
+- Run `VACUUM ANALYZE` periodically to maintain index performance
+
+### Docker Resource Allocation
+
+| Service | Minimum Memory | Recommended Memory |
+|---------|---------------|--------------------|
+| app | 512 MB | 1 GB |
+| marker | 512 MB | 1 GB |
+| lightrag | 1 GB | 2 GB |
+| skill-executor | 256 MB | 512 MB |
+| **Total** | **2.25 GB** | **4.5 GB** |
+
+### NAS Environment Recommendations
+
+- At least 4 GB RAM available for Docker
+- SSD storage recommended (affects vector search speed)
+- Set up reverse proxy (Nginx / Traefik) for HTTPS and WebSocket handling

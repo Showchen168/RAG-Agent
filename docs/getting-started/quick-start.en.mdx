@@ -1,0 +1,65 @@
+---
+title: Quick Start
+description: Get NexusMind running in 5 minutes
+---
+
+## Prerequisites
+
+- Node.js 20+
+- pnpm
+- Docker &amp; Docker Compose
+- Supabase project (cloud or self-hosted)
+
+## Local Development
+
+```bash title="Install and Start"
+# 1. Clone the project
+git clone https://github.com/Showchen168/nexusmind.git
+cd nexusmind
+
+# 2. Install dependencies
+pnpm install
+
+# 3. Set up environment variables
+cp .env.production.example .env.local
+# Edit .env.local and fill in actual values
+
+# 4. Start development server
+pnpm dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) to see NexusMind.
+
+## Docker Deployment (NAS)
+
+```bash title="Docker Deployment"
+# 1. Set up environment variables
+cp .env.production.example .env.production
+# Edit .env.production and fill in actual values
+
+# 2. Build image
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+  -t nexusmind-app:latest .
+
+# 3. Start all services
+docker compose up -d
+```
+
+## Verify Installation
+
+After starting, check if the following services are running:
+
+| Service | URL | Expected Response |
+|---------|-----|-------------------|
+| Main App | `http://localhost:3000` | NexusMind homepage |
+| Marker | `http://localhost:8001/health` | `{"status": "ok"}` |
+| LightRAG | `http://localhost:8002/health` | `{"status": "ok"}` |
+| Skill Executor | `http://localhost:8003/health` | `{"status": "ok"}` |
+
+## Next Steps
+
+- Go to [Environment Variables](/docs/getting-started/environment) for complete configuration
+- Start using the [AI Chat](/docs/features/chat) feature
+- Upload your first document to the [Knowledge Base](/docs/features/knowledge)

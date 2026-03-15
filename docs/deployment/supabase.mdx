@@ -1,0 +1,214 @@
+---
+title: Supabase 設定
+description: 資料庫設定、Migration 管理、RLS 策略與 pgvector 配置
+---
+
+## 概述
+
+NexusMind 使用 **Supabase** 作為後端基礎設施，提供 PostgreSQL 資料庫、Auth 認證、Row Level Security 和即時 API。資料庫啟用 **pgvector** 擴充支援向量搜尋。
+
+## 選擇部署方式
+
+### Supabase Cloud（推薦）
+
+適合快速上手，免維護：
+
+1. 前往 [supabase.com](https://supabase.com) 建立專案
+2. 取得 Project URL、Anon Key、Service Role Key
+3. 填入 `.env.local` 或 `.env.production`
+
+| 優點 | 缺點 |
+|------|------|
+| 零維護、自動備份 | 免費方案有限制（500 MB、50K rows） |
+| 內建 Dashboard | 資料在雲端 |
+| 自動 SSL | 延遲取決於區域 |
+
+### 自建 Supabase（NAS / 本地）
+
+適合資料隱私需求高或內網部署：
+
+```bash
+# 使用 Supabase CLI
+npx supabase start
+
+# 預設端點
+# API: http://127.0.0.1:54321
+# Studio: http://127.0.0.1:54323
+# DB: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+```
+
+| 優點 | 缺點 |
+|------|------|
+| 資料在本地 | 需自行維護與備份 |
+| 無容量限制 | 需要更多系統資源 |
+| 內網低延遲 | 需設定反向代理（HTTPS） |
+
+### Docker 環境的雙 URL 策略
+
+在 NAS Docker 部署時，瀏覽器走公網 HTTPS、伺服器走內網 HTTP：
+
+```bash
+# .env.production
+NEXT_PUBLIC_SUPABASE_URL=https://supabase.your-domain.com  # 瀏覽器（公網 HTTPS）
+SUPABASE_SERVER_URL=http://192.168.0.7:54321               # 伺服器（內網 HTTP）
+```
+
+系統會自動處理 Cookie 名稱一致性（見[認證與登入](/docs/getting-started/authentication)）。
+
+## Migration 管理
+
+NexusMind 使用 Supabase Migration 管理資料庫 Schema。目前共 **28 個遷移檔案**。
+
+### 執行遷移
+
+```bash
+# 本地開發（使用 Supabase CLI）
+npx supabase migration up --local
+
+# 雲端專案
+npx supabase db push
+```
+
+### 遷移歷程概覽
+
+| 日期 | 主要變更 |
+|------|---------|
+| 2/10 | 核心表建立（conversations, messages, documents） |
+| 2/13 | 知識圖譜 + 語意搜尋函式 |
+| 2/14 | Canvas 文件表 |
+| 2/15 | 研究會話表 |
+| 2/17 | 報告系統表 |
+| 2/20 | BM25 全文搜尋（tsvector） |
+| 2/24-25 | Telegram 整合表（telegram_users, bot_config, link_codes） |
+| 2/26 | 技能系統表（skills, skill_attachments） |
+| 3/1 | 技能偏好追蹤 |
+| 3/2 | RAG 透明度 metadata |
+
+### 建立新 Migration
+
+```bash
+# 建立空白 migration
+npx supabase migration new my_feature_name
+
+# 編輯 SQL 檔案
+# supabase/migrations/YYYYMMDDHHMMSS_my_feature_name.sql
+
+# 套用到本地
+npx supabase migration up --local
+```
+
+> **安全提醒**：永遠使用 `migration up --local`，**不要**使用 `supabase db reset`（會清除所有資料）。
+
+## pgvector 設定
+
+### 向量搜尋配置
+
+| 項目 | 值 |
+|------|-----|
+| 擴充 | `pgvector` |
+| 向量維度 | 768（Gemini embedding-001）|
+| 索引類型 | HNSW |
+| 索引參數 | `m=16, ef_construction=64` |
+| 相似度算法 | cosine（`vector_cosine_ops`） |
+
+### 搜尋函式
+
+```sql
+-- 向量相似度搜尋
+match_documents(query_embedding vector, threshold float, count int)
+
+-- BM25 全文搜尋
+match_documents_bm25(query_text text, count int, user_id uuid)
+
+-- 單文件語意搜尋
+match_document_sections(query_embedding vector, ...)
+```
+
+### 嵌入向量儲存
+
+文件上傳時自動產生嵌入向量：
+
+```
+文件內容 → 分段（chunking） → gemini-embedding-001 → 768 維向量 → document_embeddings 表
+```
+
+每個 chunk 同時產生 `tsvector`（用於 BM25 搜尋），實現向量語意 + 關鍵字雙重搜尋。
+
+## 核心表架構
+
+### 使用者與認證
+
+| 表 | 說明 | RLS |
+|-----|------|-----|
+| `auth.users` | Supabase 內建使用者表 | — |
+| `profiles` | 擴展資訊（顯示名稱、偏好模型、系統提示） | 只看自己 |
+
+### 對話與訊息
+
+| 表 | 說明 | 關鍵欄位 |
+|-----|------|---------|
+| `conversations` | 對話紀錄 | `parent_conversation_id`（分叉）、`model` |
+| `messages` | 訊息紀錄 | `metadata` JSONB（RAG 透明度） |
+
+### 知識庫
+
+| 表 | 說明 | 關鍵欄位 |
+|-----|------|---------|
+| `documents` | 知識庫文件 | `enabled`（是否參與 RAG） |
+| `document_embeddings` | 向量嵌入 | `embedding` vector(768)、`fts` tsvector |
+| `document_relations` | 文件關聯 | `relation_type`、`strength` |
+| `document_versions` | 版本歷史 | `version_number`、`change_description` |
+| `knowledge_sources` | 監控源 | `source_type`（rss/url/youtube） |
+
+### 功能表
+
+| 表 | 說明 |
+|-----|------|
+| `canvas_documents` | Canvas 富文本文件（TipTap JSON） |
+| `research_sessions` | 研究會話 |
+| `reports` | 報告（Markdown） |
+| `skills` | 技能定義（`skill_config` JSONB） |
+| `skill_attachments` | 技能輸出檔案 |
+| `prompt_templates` | 提示詞模板 |
+| `assistant_presets` | AI 助理預設角色 |
+| `user_memories` | 使用者記憶 |
+
+### Telegram 相關
+
+| 表 | RLS | 說明 |
+|-----|-----|------|
+| `telegram_users` | service_role | 帳號綁定映射 |
+| `telegram_bot_config` | 認證可讀 | Bot Token 加密儲存 |
+| `telegram_link_codes` | service_role | 臨時綁定碼 |
+
+## RLS 策略設計原則
+
+所有使用者資料表啟用 RLS，遵循最小權限原則：
+
+1. **直接擁有**：`WHERE user_id = auth.uid()`（profiles, documents, conversations）
+2. **間接存取**：透過 JOIN 父表驗證（messages → conversations → user_id）
+3. **公開 + 私有**：`WHERE user_id = auth.uid() OR is_public = true`（prompt_templates）
+4. **Service Role Only**：Telegram 相關表僅後端 Admin Client 可操作
+
+## 備份建議
+
+### Supabase Cloud
+
+- 自動每日備份（Pro 方案）
+- 可透過 Dashboard 手動備份
+
+### 自建 Supabase
+
+```bash
+# 使用 pg_dump 備份
+pg_dump -h 127.0.0.1 -p 54322 -U postgres -d postgres > backup.sql
+
+# 還原
+psql -h 127.0.0.1 -p 54322 -U postgres -d postgres < backup.sql
+```
+
+建議設定 crontab 每日自動備份：
+
+```bash
+0 3 * * * pg_dump -h 127.0.0.1 -p 54322 -U postgres -d postgres | gzip > /backup/nexusmind_$(date +\%Y\%m\%d).sql.gz
+```

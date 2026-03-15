@@ -1,0 +1,73 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.local.example
+!.env.production.example
+
+# supabase
+supabase/.temp/
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# langfuse reports (generated)
+scripts/langfuse-report.json
+
+# docker volumes
+lightrag-service/data/
+.claude.local.md
+.worktrees/
+
+# Local skill storage
+.data/
+
+# Docs site (independent repo: Showchen168/nexusmind-docs)
+nexusmind-docs/
+
+# Open Source Cleanup / Local Scratchpads & Logs
+systematic-debug.log*
+topic_search_log.md
+docx_execution_spec.json
+test-results/
+.aionui_temp/
+.axel/
+.claude/
+.codex/
+.coverage-telegram/
+.hub-preview.log
+supabase/db.sqlite3

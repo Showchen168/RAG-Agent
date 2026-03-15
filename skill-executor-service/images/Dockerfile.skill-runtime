@@ -1,0 +1,20 @@
+# NexusMind Skill Runtime - Node.js + Python dual-runtime image
+# Pre-installs common npm packages so skills work with NetworkMode: 'none'
+
+FROM nikolaik/python-nodejs:python3.11-nodejs20-slim
+
+# Install common Python packages for Office document processing
+RUN pip install --no-cache-dir defusedxml lxml
+
+# Pre-install npm packages to a shared location
+# NODE_PATH lets require() find them from any working directory
+ENV NODE_PATH=/usr/local/skill-modules/node_modules
+RUN mkdir -p /usr/local/skill-modules && \
+    cd /usr/local/skill-modules && \
+    npm init -y --silent && \
+    npm install --save docx 2>/dev/null
+
+# Ensure /output and /input directories exist
+RUN mkdir -p /output /input
+
+WORKDIR /output

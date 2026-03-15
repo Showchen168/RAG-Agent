@@ -1,0 +1,223 @@
+---
+title: 故障排除
+description: 常見問題、錯誤排查與解決方案
+---
+
+## Docker 部署問題
+
+### 容器啟動失敗
+
+**症狀：** `docker compose up` 後容器不斷重啟
+
+| 檢查項目 | 指令 | 說明 |
+|---------|------|------|
+| 容器日誌 | `docker logs nexusmind-app` | 查看錯誤訊息 |
+| 健康狀態 | `docker compose ps` | 確認各服務狀態 |
+| 環境變數 | `docker exec nexusmind-app env` | 確認變數正確注入 |
+
+**常見原因：**
+
+1. **`.env.production` 缺少必要變數** — 確認已設定 `NEXT_PUBLIC_SUPABASE_URL`、`NEXT_PUBLIC_SUPABASE_ANON_KEY`、`SUPABASE_SERVICE_ROLE_KEY`、`GOOGLE_GENERATIVE_AI_API_KEY`
+2. **Build Args 未傳入** — `NEXT_PUBLIC_*` 變數必須在 `docker build` 時透過 `--build-arg` 傳入
+3. **微服務未就緒** — app 會等待 marker、lightrag、skill-executor 健康檢查通過
+
+### Build Args 問題
+
+**症狀：** 頁面載入後 Supabase 連線失敗
+
+`NEXT_PUBLIC_*` 變數在 Build time 寫入前端 bundle，Runtime 無法覆蓋：
+
+```bash
+# 正確方式：build 時傳入
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-supabase.com \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-key \
+  -t nexusmind-app:latest .
+
+# 錯誤：只在 .env.production 設定是不夠的
+# NEXT_PUBLIC_* 需要在 build 階段就存在
+```
+
+### 跨平台建構（Apple Silicon → AMD64）
+
+在 Mac M 系列晶片上為 NAS（AMD64）建構映像：
+
+```bash
+docker buildx build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=... \
+  -t nexusmind-app:latest --load .
+```
+
+## Supabase 連線問題
+
+### 認證失敗
+
+**症狀：** 登入後被導回登入頁
+
+| 原因 | 解決方案 |
+|------|---------|
+| Cookie 名稱不匹配 | 確認 `SUPABASE_SERVER_URL` 與 `NEXT_PUBLIC_SUPABASE_URL` 的 hostname 設定正確 |
+| Session 過期 | 清除瀏覽器 cookies，重新登入 |
+| Service Role Key 錯誤 | 確認 `SUPABASE_SERVICE_ROLE_KEY` 與 Supabase 專案一致 |
+
+### Docker 環境 Supabase 連不上
+
+**症狀：** 伺服器端 API 請求失敗，瀏覽器端正常
+
+| 情況 | 設定 |
+|------|------|
+| Supabase Cloud | `SUPABASE_SERVER_URL` 不需設定（使用 `NEXT_PUBLIC_*`） |
+| 自建 Supabase（同一 Docker 網路） | `SUPABASE_SERVER_URL=http://supabase-kong:8000` |
+| 自建 Supabase（同一 NAS） | `SUPABASE_SERVER_URL=http://192.168.x.x:54321` |
+
+### Migration 問題
+
+```bash
+# 查看未套用的 migration
+npx supabase migration list
+
+# 只套用新的 migration（保留資料）
+npx supabase migration up --local
+
+# 重要：永遠不要使用 supabase db reset（會清除所有資料）
+```
+
+## 微服務問題
+
+### 健康檢查 API
+
+```bash
+# 檢查所有微服務狀態
+curl http://localhost:3000/api/services/health
+
+# 個別檢查
+curl http://localhost:8001/health  # Marker
+curl http://localhost:8002/health  # LightRAG
+curl http://localhost:8003/health  # Skill Executor
+```
+
+### Marker 服務問題
+
+**症狀：** 文件上傳後內容為空
+
+| 原因 | 解決方案 |
+|------|---------|
+| Marker 容器未啟動 | `docker compose up -d marker` |
+| 記憶體不足 | 增加 Marker 容器記憶體限制（預設 1 GB） |
+| 掃描型 PDF | 正常行為，系統會自動降級至 Gemini Vision OCR |
+
+**降級鏈：** Marker → Gemini Vision OCR → 內建 Parser（pdf-parse / mammoth）
+
+### LightRAG 服務問題
+
+**症狀：** 知識圖譜查詢無結果
+
+| 原因 | 解決方案 |
+|------|---------|
+| LightRAG 尚未索引 | 上傳文件後等待索引完成（查看日誌） |
+| 超時（預設 5 秒） | 大型知識庫查詢可能超時，屬正常行為 |
+| Volume 遺失 | 確認 `lightrag-data` volume 存在 |
+
+### Skill Executor 問題
+
+**症狀：** 技能執行逾時或失敗
+
+| 原因 | 解決方案 |
+|------|---------|
+| Docker socket 權限 | 確認 `/var/run/docker.sock` 已掛載且有權限 |
+| Runtime 映像未建構 | 執行 `docker build -t nexusmind-skill-runtime:node-20 ./skill-executor-service/runtime` |
+| 記憶體不足 | 技能預設 512 MB，複雜計算可能需要更多 |
+
+## AI 對話問題
+
+### RAG 未返回結果
+
+**症狀：** AI 回答未引用知識庫
+
+| 原因 | 解決方案 |
+|------|---------|
+| 文件未啟用 | 在知識庫頁面確認文件 `enabled` 狀態為開啟 |
+| 嵌入向量未產生 | 查看 `document_embeddings` 表是否有對應記錄 |
+| 相似度過低 | 預設閾值 0.6，RSS 來源 0.45，可能是查詢與文件內容差異太大 |
+| RAG 超時 | 總超時 12 秒，若 Supabase / LightRAG 回應慢可能觸發 |
+
+### 串流中斷
+
+**症狀：** AI 回答中途停止
+
+| 原因 | 解決方案 |
+|------|---------|
+| 反向代理超時 | 設定 Nginx `proxy_read_timeout 300s` |
+| NAS 環境 | 系統已內建 15 秒心跳機制，確認使用最新版本 |
+| 網路不穩 | 檢查 Docker 容器網路設定 |
+
+### 記憶系統
+
+**症狀：** AI 不記得之前的對話
+
+記憶系統從對話中自動提取偏好與行為：
+
+- 記憶是逐步累積的，需要多次對話才會產生效果
+- 記憶有去重機制（Bigram Jaccard 相似度 ≥ 0.6 視為重複）
+- 可在設定頁面查看已儲存的記憶
+
+## Telegram Bot 問題
+
+### Bot 無回應
+
+| 原因 | 解決方案 |
+|------|---------|
+| Webhook 未註冊 | 在 Settings 頁面點擊「註冊 Webhook」 |
+| Token 錯誤 | 重新輸入 Bot Token |
+| DNS 解析失敗 | Docker 環境可能需要自訂 DNS（系統已內建 8.8.8.8 / 1.1.1.1） |
+| 訊息超過 4,096 字元 | 系統自動分割，但極長回覆可能延遲 |
+
+### Webhook 驗證失敗
+
+```bash
+# 查看 Webhook 狀態
+curl http://localhost:3000/api/telegram/webhook-status
+```
+
+確認 `x-telegram-bot-api-secret-token` header 與 DB 中的 `webhook_secret` 一致。
+
+## 定時任務（Cron）
+
+### 知識源監控
+
+```bash
+# 手動觸發
+curl -H "Authorization: Bearer $CRON_SECRET" \
+  http://localhost:3000/api/cron/check-sources
+
+# NAS Task Scheduler 設定
+# 排程：每小時
+# 指令：curl -s -H "Authorization: Bearer YOUR_SECRET" http://localhost:3000/api/cron/check-sources
+```
+
+**`CRON_SECRET` 未設定** → API 會返回 401，請在 `.env.production` 中設定。
+
+## 效能優化
+
+### 資料庫
+
+- 確保 pgvector HNSW 索引已建立（migration 自動處理）
+- 大量文件（>1000 篇）時，考慮增加 `ef_construction` 參數
+- 定期執行 `VACUUM ANALYZE` 維護索引效能
+
+### Docker 資源分配
+
+| 服務 | 建議最小記憶體 | 建議記憶體 |
+|------|-------------|-----------|
+| app | 512 MB | 1 GB |
+| marker | 512 MB | 1 GB |
+| lightrag | 1 GB | 2 GB |
+| skill-executor | 256 MB | 512 MB |
+| **總計** | **2.25 GB** | **4.5 GB** |
+
+### NAS 環境建議
+
+- 至少 4 GB RAM 可用於 Docker
+- SSD 儲存建議（影響向量搜尋速度）
+- 設定反向代理（Nginx / Traefik）處理 HTTPS 與 WebSocket

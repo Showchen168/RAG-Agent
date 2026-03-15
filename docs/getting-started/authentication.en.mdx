@@ -1,0 +1,174 @@
+---
+title: Authentication &amp; Login
+description: Google OAuth login, session management, and route protection
+---
+
+## Overview
+
+NexusMind uses **Supabase Auth** with **Google OAuth 2.0** for user authentication. All sensitive pages are protected by Middleware — unauthenticated users are automatically redirected to the login page.
+
+## Authentication Methods
+
+### Google OAuth Login (Recommended)
+
+| Item | Value |
+|------|-------|
+| Provider | Google OAuth 2.0 |
+| Callback | `/api/auth/callback` |
+| Default Redirect | `/chat` |
+
+**Setup Steps:**
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create an OAuth 2.0 client
+2. Set the authorized redirect URI: `https://your-supabase-project.supabase.co/auth/v1/callback`
+3. In Supabase Dashboard → Authentication → Providers → Google, enable and enter Client ID / Secret
+4. Set in `.env.local`:
+
+```bash
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+### Email / Password Login
+
+Supabase Auth has built-in Email login support. Enable it in the Supabase Dashboard.
+
+### Telegram Auto Account Creation
+
+When an unlinked Telegram user sends a message for the first time, the system automatically:
+
+1. Creates an Auth user (Email: `telegram_CHATID@nexusmind.bot`)
+2. Creates a Profile (`preferred_model: gemini-flash`)
+3. Creates a default conversation (title: "Telegram Chat")
+4. Creates a `telegram_users` mapping
+
+## OAuth Callback Flow
+
+```
+User clicks "Sign in with Google"
+  → Supabase Auth redirects to Google auth page
+  → User grants authorization
+  → Google calls back to Supabase
+  → Supabase calls back to /api/auth/callback?code=xxx
+  → exchangeCodeForSession(code) exchanges for JWT
+  → Sets Session Cookie
+  → Redirects to /chat (or page specified by next parameter)
+```
+
+**Security Measures:**
+
+- `next` parameter validation: must start with `/` and cannot start with `//` (prevents Open Redirect)
+- On failure, redirects to `/login?error=auth_callback_error`
+
+## Session Management
+
+### Cookie Mechanism
+
+| Item | Value |
+|------|-------|
+| Cookie Name | `sb-{hostname}-auth-token` |
+| Format | Supabase SSR chunked cookies |
+| Chunking | Large JWTs auto-chunked as `sb-*-auth-token.0`, `.1`, `.2`... |
+
+### Supabase Dual URL Strategy (Docker Environment)
+
+In Docker deployments, the browser and server may see different Supabase URLs:
+
+| Environment | Variable | Purpose | Example |
+|-------------|----------|---------|---------|
+| Browser | `NEXT_PUBLIC_SUPABASE_URL` | Build-time embedded in frontend | `https://supabase.example.com` |
+| Server | `SUPABASE_SERVER_URL` | Runtime internal network direct connect | `http://192.168.0.7:54321` |
+
+When Server URL and Client URL hostnames differ, the system automatically overrides the Cookie name:
+
+```
+Cookie Name = sb-{clientHostname}-auth-token
+```
+
+This ensures the server can correctly read Session Cookies set by the browser.
+
+## Middleware Route Protection
+
+### Protected Routes
+
+| Route | Description |
+|-------|-------------|
+| `/chat` | AI Chat |
+| `/knowledge` | Knowledge Base |
+| `/settings` | Account Settings |
+| `/dashboard` | Dashboard |
+| `/reports` | Reports |
+
+### Protection Logic
+
+```
+Incoming request
+  → Check if cookie contains sb-*-auth-token
+  │
+  ├─ Not logged in + accessing protected route → Redirect to /login
+  ├─ Logged in + accessing /login or /register → Redirect to /chat
+  └─ Otherwise → Allow through
+```
+
+**Design Features:**
+
+- **Lightweight Edge Runtime**: Only checks Cookie existence, no Supabase API calls, reducing latency
+- **Session Expiry Handling**: Supports `?session_expired=1` parameter to auto-clear expired Cookies
+- Static assets (`_next/static`, `favicon.ico`) bypass Middleware
+
+## Row Level Security (RLS)
+
+All tables have RLS enabled, ensuring users can only access their own data:
+
+| Access Pattern | Description | Applicable Tables |
+|----------------|-------------|-------------------|
+| Own data only | `auth.uid() = user_id` | profiles, conversations, documents, canvas_documents |
+| Indirect access | Verified via parent table JOIN | messages (via conversations), document_embeddings (via documents) |
+| Own + public | Own OR `is_public = true` | prompt_templates |
+| Authenticated read | All logged-in users can read | assistant_presets |
+| Service Role | Backend admin client only | telegram_users, telegram_bot_config, telegram_link_codes |
+
+## Supabase Client Architecture
+
+### Browser (Client Component)
+
+```typescript
+import { createBrowserClient } from '@supabase/ssr'
+
+// Uses NEXT_PUBLIC_* variables (build-time embedded)
+const supabase = createBrowserClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
+```
+
+### Server (Server Component / Route Handler)
+
+```typescript
+import { createServerClient } from '@supabase/ssr'
+
+// Prefers SUPABASE_SERVER_URL (Docker internal)
+// Falls back to NEXT_PUBLIC_SUPABASE_URL
+const supabase = createServerClient(supabaseUrl, supabaseKey, {
+  cookieOptions: { name: cookieName }, // Override cookie name when needed
+  cookies: { getAll, setAll }
+})
+```
+
+### Admin Client (Bypasses RLS)
+
+```typescript
+import { createClient } from '@supabase/supabase-js'
+
+// Uses SUPABASE_SERVICE_ROLE_KEY, no cookie handling
+// Used for Telegram auto user creation, system background tasks, etc.
+const adminClient = createClient(url, serviceRoleKey)
+```
+
+## OAuth Token Mode (Advanced)
+
+After setting `USE_OAUTH=true`, the system uses OAuth Token instead of API Key to call Gemini API:
+
+1. Run `npx gemini init` for one-time authorization
+2. System uses OAuth Token to call Google Generative AI API
+3. Suitable for scenarios requiring higher quotas or special permissions

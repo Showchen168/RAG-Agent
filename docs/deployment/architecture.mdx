@@ -1,0 +1,265 @@
+---
+title: 微服務架構
+description: NexusMind 的 4 個微服務與 Docker Compose 部署說明
+---
+
+## 架構總覽
+
+NexusMind 由 4 個微服務組成，使用 Docker Compose 統一管理：
+
+| 服務 | 容器名稱 | 端口 | 記憶體 | 基礎映像 | 功能 |
+|------|---------|------|--------|---------|------|
+| **app** | nexusmind-app | 3000 | 1 GB | node:20-alpine | Next.js 主應用（66+ API 端點）|
+| **marker** | nexusmind-marker | 8001 | 1 GB | python:3.11-slim | 文件解析（PDF/DOCX/PPTX/XLSX）|
+| **lightrag** | nexusmind-lightrag | 8002 | 2 GB | python:3.11-slim | GraphRAG 知識圖譜 |
+| **skill-executor** | nexusmind-skill-executor | 8003 | 512 MB | node:20-slim | Docker-in-Docker 技能執行沙箱 |
+
+## 主應用（app）
+
+三階段 Docker 建構的 Next.js 16 全棧應用。
+
+### 建構階段
+
+| 階段 | 基礎映像 | 說明 |
+|------|---------|------|
+| deps | node:20-alpine | pnpm install --frozen-lockfile |
+| builder | node:20-alpine | 注入 Build Args → pnpm build |
+| runner | node:20-alpine | 非 root 執行（nextjs:1001），`node server.js` |
+
+### Build Args（建構時注入）
+
+```bash
+docker build \\
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \\
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \\
+  --build-arg NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=$NEXT_PUBLIC_TELEGRAM_BOT_USERNAME \\
+  -t nexusmind-app:latest .
+```
+
+`NEXT_PUBLIC_*` 變數在建構時寫死到 `.next/standalone`，Runtime 無法覆蓋。
+
+### 主要 API 群組
+
+| 群組 | 端點範例 | 路由數 |
+|------|---------|--------|
+| 對話 | `/api/chat`、`/api/conversations/*` | ~7 |
+| 知識庫 | `/api/knowledge/*`、`/api/knowledge/upload` | ~16 |
+| 技能 | `/api/skills/*`、`/api/skills/execute` | ~9 |
+| Canvas | `/api/canvas/*`、`/api/reports/*` | ~8 |
+| Telegram | `/api/telegram/webhook`、`/api/telegram/link` | ~6 |
+| Copilot | `/api/copilot/completion`、`/api/copilot/command` | ~3 |
+| 提示詞 | `/api/prompts`、`/api/prompts/:id` | ~6 |
+| Google Drive | `/api/gdrive/*` | ~5 |
+| 系統 | `/api/cron/check-sources`、`/api/services/health` | ~3 |
+
+## Marker 微服務
+
+Python/FastAPI 應用，負責解析各種文件格式。
+
+| 項目 | 值 |
+|------|-----|
+| 框架 | FastAPI + Uvicorn |
+| 核心依賴 | pymupdf4llm、python-pptx、openpyxl |
+| 支援格式 | PDF、DOCX、PPTX、XLSX、HTML、EPUB |
+| Keep-Alive | 300 秒 |
+
+### 健康檢查
+
+```
+GET /health → 200 OK
+間隔: 30 秒 | 超時: 10 秒 | 重試: 3 次 | 啟動延遲: 30 秒
+```
+
+## LightRAG 微服務
+
+Python 應用，負責 GraphRAG 知識圖譜的建立與查詢。
+
+| 項目 | 值 |
+|------|-----|
+| 框架 | FastAPI + Uvicorn |
+| 核心依賴 | lightrag-hku 1.3.8、google-genai、networkx |
+| 嵌入模型 | `gemini-embedding-001`（768 維）|
+| LLM 模型 | `gemini-2.0-flash` |
+| 查詢模式 | hybrid（向量 + 圖譜）|
+
+### 持久化
+
+使用 Docker Named Volume `lightrag-data` 掛載至 `/app/data`，儲存 NetworkX 圖資料庫和嵌入向量。
+
+### 健康檢查
+
+```
+GET /health → 200 OK
+間隔: 30 秒 | 超時: 10 秒 | 重試: 3 次 | 啟動延遲: 30 秒
+```
+
+## Skill Executor 微服務
+
+Node.js 應用，透過 Dockerode 控制 Docker daemon 建立技能執行容器。
+
+| 項目 | 值 |
+|------|-----|
+| 框架 | Express 5 |
+| 核心依賴 | dockerode 4、tar-stream 3、zod |
+| 映像白名單 | node:、python:、alpine:、ubuntu:、nexusmind-skill-runtime: |
+| 預設超時 | 60 秒（最大 300 秒）|
+| 預設記憶體 | 512 MB |
+
+### 技能 Runtime 映像
+
+基於 `nikolaik/python-nodejs:python3.11-nodejs20-slim`，預裝：
+- npm: `docx`（Word 文件生成）
+- Python: `defusedxml`、`lxml`
+
+### 安全設定
+
+| 設定 | 值 |
+|------|-----|
+| 網路 | `NetworkMode: none`（完全隔離）|
+| Capability | `CapDrop: ALL` |
+| Swap | 禁用（MemorySwap = Memory）|
+| 路徑驗證 | 防止路徑穿越攻擊 |
+
+### 健康檢查
+
+```
+GET /health → 200 OK
+間隔: 30 秒 | 超時: 10 秒 | 重試: 3 次 | 啟動延遲: 15 秒
+```
+
+## 服務間通信
+
+所有服務透過 Docker bridge 網路通信：
+
+| 方向 | 協議 | 端口 | 用途 |
+|------|------|------|------|
+| app → marker | HTTP | 8001 | 文件解析 |
+| app → lightrag | HTTP | 8002 | 知識圖譜查詢 |
+| app → skill-executor | HTTP | 8003 | 技能執行 |
+| skill-executor → Docker | Unix Socket | — | 容器生命週期管理 |
+| 外部 → app | HTTP/HTTPS | 3000 | 使用者存取 |
+
+### 健康檢查連鎖
+
+app 服務啟動前，會等待所有依賴服務達到 healthy 狀態：
+
+```
+depends_on:
+  marker:         condition: service_healthy
+  lightrag:       condition: service_healthy
+  skill-executor: condition: service_healthy
+```
+
+### 健康狀態 API
+
+`GET /api/services/health` 回傳各微服務的狀態與延遲：
+
+```json
+\{
+  "marker": \{ "available": true, "latency": 45 \},
+  "lightrag": \{ "available": true, "latency": 120 \}
+\}
+```
+
+## Volume 掛載
+
+### Named Volumes
+
+| Volume | 掛載點 | 說明 |
+|--------|--------|------|
+| `lightrag-data` | `/app/data`（lightrag）| 知識圖譜持久化 |
+| `skills-data` | `/data/skills`（skill-executor）| 技能執行結果暫存 |
+
+### Bind Mounts
+
+| 來源 | 目標 | 說明 |
+|------|------|------|
+| `/var/run/docker.sock` | `/var/run/docker.sock`（skill-executor）| Docker daemon 通信 |
+
+## 資料庫架構
+
+使用 **Supabase** 提供的 PostgreSQL，啟用 pgvector 擴充。共 30+ 個遷移檔案、35+ 核心表。
+
+### pgvector 設定
+
+| 項目 | 值 |
+|------|-----|
+| 向量維度 | 768（Gemini embedding-001）|
+| 索引類型 | HNSW（m=16, ef_construction=64）|
+| 相似度算法 | cosine（`vector_cosine_ops`）|
+
+### 核心表概覽
+
+| 表 | 說明 | RLS |
+|-----|------|-----|
+| `profiles` | 使用者擴展資訊（顯示名稱、偏好模型）| 只看自己 |
+| `conversations` | 對話紀錄（支援分叉：`parent_conversation_id`）| 只看自己 |
+| `messages` | 訊息紀錄（含 `metadata` JSONB：RAG 透明度）| 透過 conversations 間接 |
+| `documents` | 知識庫文件（標題、內容、摘要、標籤）| 只看自己 |
+| `document_embeddings` | 向量搜尋（768 維 + BM25 tsvector）| 透過 documents 間接 |
+| `document_relations` | 文件關聯（來源、目標、類型、強度）| 只看自己 |
+| `document_versions` | 版本歷史（版本號、變更描述）| 只看自己 |
+| `canvas_documents` | Canvas 文件（TipTap JSON 內容）| 只看自己 |
+| `knowledge_sources` | 知識源監控（RSS/URL/YouTube）| 只看自己 |
+| `skills` | 技能定義（`skill_config` JSONB）| 自己 + 系統技能 |
+| `skill_attachments` | 技能輸出檔案（FK → messages）| 透過 conversations 間接 |
+| `personas` | 自訂 AI 角色（含圖示與預設 Prompt） | 只看自己 |
+| `prompt_templates` | 提示詞庫（分享與統計） | 依分享狀態 |
+| `assistant_presets` | AI 助理預設（5 個內建角色）| 已認證可讀 |
+| `telegram_users` | Telegram 帳號綁定 | service_role |
+| `telegram_bot_config` | Bot 設定（Token 加密儲存）| 認證可讀，service_role 可寫 |
+| `telegram_link_codes` | 臨時綁定碼 | service_role |
+| `user_memories` | 使用者記憶（偏好/事實/行為/上下文，768 維向量） | 只看自己 |
+| `user_skill_preferences` | 使用者技能偏好（個人化啟用/停用） | 只看自己 |
+| `audit_logs` | 安全監査日誌 | service_role |
+| `gdrive_user_tokens` | Google Drive OAuth 權杖（加密儲存） | 只看自己 |
+
+### 關鍵搜尋函式
+
+| 函式 | 用途 |
+|------|------|
+| `match_documents(query_embedding, threshold, count)` | 向量相似度搜尋 |
+| `match_documents_bm25(query_text, count, user_id)` | BM25 全文搜尋 |
+| `match_document_sections(...)` | 單文件語意搜尋 |
+| `search_user_memories(user_id, query_embedding, threshold, max_results)` | 使用者記憶語意搜尋 |
+
+## 部署指令
+
+### Docker Compose 部署
+
+```bash
+# 複製環境變數
+cp .env.production.example .env.production
+# 編輯填入實際值
+
+# 建構並啟動所有服務
+docker compose --env-file .env.production up -d --build
+
+# 驗證健康狀態
+docker compose ps
+curl http://localhost:3000/api/services/health
+```
+
+### NAS 單獨建構
+
+```bash
+# 建構主應用（注入 Build Args）
+docker build --no-cache \\
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-supabase.com \\
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key \\
+  -t nexusmind-app:latest .
+
+# 更新容器
+docker compose stop app && docker compose rm -f app
+docker compose up -d app
+```
+
+### 跨平台建構
+
+若從 Apple Silicon (ARM) 建構 AMD64 映像：
+
+```bash
+docker buildx build --platform linux/amd64 \\
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=... \\
+  -t nexusmind-app:latest --load .
+```

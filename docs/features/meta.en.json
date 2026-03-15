@@ -1,0 +1,12 @@
+{
+  "title": "Core Features",
+  "pages": [
+    "chat",
+    "knowledge",
+    "skills",
+    "canvas",
+    "telegram",
+    "ai-models",
+    "prompt-templates"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "title": "核心功能",
+  "pages": [
+    "chat",
+    "knowledge",
+    "skills",
+    "canvas",
+    "telegram",
+    "ai-models",
+    "prompt-templates"
+  ]
+}

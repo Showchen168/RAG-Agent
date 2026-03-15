@@ -1,0 +1,98 @@
+---
+title: 環境變數設定
+description: NexusMind 所有環境變數的完整說明與設定指南
+---
+
+## 必要變數
+
+以下變數為**必填**，缺少任何一個系統將無法正常運作：
+
+| 變數 | 說明 | 範例 |
+|------|------|------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 專案 URL（前端可見） | `https://xxx.supabase.co` 或 `http://127.0.0.1:54321`（本地） |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase 匿名金鑰（前端 RLS 驗證用） | `eyJhbGci...` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase 服務角色金鑰（後端繞過 RLS） | `eyJhbGci...` |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google Gemini API Key（AI 對話 + 嵌入向量） | `AIzaSy...` |
+| `CRON_SECRET` | 定時任務驗證密鑰（防止未授權存取 `/api/cron/*`） | 任意強密碼字串 |
+
+## 微服務連線
+
+Docker Compose 部署時由容器網路自動解析，本地開發需手動設定：
+
+| 變數 | Docker 預設值 | 本地開發值 | 說明 |
+|------|-------------|-----------|------|
+| `MARKER_SERVICE_URL` | `http://marker:8001` | `http://localhost:8001` | Marker 文件解析微服務 |
+| `LIGHTRAG_SERVICE_URL` | `http://lightrag:8002` | `http://localhost:8002` | LightRAG 知識圖譜微服務 |
+| `SKILL_EXECUTOR_URL` | `http://skill-executor:8003` | `http://localhost:8003` | Docker-in-Docker 技能執行沙箱 |
+
+## 選用變數
+
+啟用對應功能需要設定的變數：
+
+
+
+### Google OAuth 登入
+
+| 變數 | 說明 |
+|------|------|
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 用戶端 ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 用戶端密鑰 |
+| `USE_OAUTH` | 設為 `true` 則使用 OAuth Token 呼叫 Gemini API（取代 API Key） |
+
+### Telegram Bot
+
+| 變數 | 說明 |
+|------|------|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token（透過 [@BotFather](https://t.me/BotFather) 建立） |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook 簽名驗證密鑰（自定義強密碼字串） |
+| `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | Bot 使用者名稱（不含 `@`，前端顯示連結用） |
+
+### 可觀測性
+
+| 變數 | 說明 |
+|------|------|
+| `LANGFUSE_PUBLIC_KEY` | Langfuse 追蹤公鑰（AI SDK spans 可觀測性） |
+| `LANGFUSE_SECRET_KEY` | Langfuse 追蹤私鑰 |
+| `LANGFUSE_BASEURL` | Langfuse 服務端點（自建或雲端） |
+
+## 設定方式
+
+### 本機開發
+
+```bash
+# 複製範本
+cp .env.production.example .env.local
+
+# 編輯填入實際值
+# 微服務 URL 使用 localhost
+# MARKER_SERVICE_URL=http://localhost:8001
+# LIGHTRAG_SERVICE_URL=http://localhost:8002
+```
+
+### Docker 部署
+
+```bash
+# 複製範本
+cp .env.production.example .env.production
+
+# 編輯填入實際值
+# 微服務 URL 使用 Docker 容器名稱（自動解析）
+# MARKER_SERVICE_URL=http://marker:8001
+# LIGHTRAG_SERVICE_URL=http://lightrag:8002
+```
+
+建構映像時需要傳入**公開變數**（`NEXT_PUBLIC_*` 在建構期間嵌入前端）：
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+  -t nexusmind-app:latest .
+```
+
+## 安全注意事項
+
+- `.env.local` 和 `.env.production` 已在 `.gitignore` 中排除，**永遠不要提交到 Git**
+- `SUPABASE_SERVICE_ROLE_KEY` 擁有繞過 RLS 的完整權限，僅限後端使用
+- Telegram Bot Token 在資料庫中使用 **AES-256-GCM** 加密儲存
+- `CRON_SECRET` 保護排程端點，防止外部未授權觸發

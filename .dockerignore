@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+.env
+.env.local
+.env.*.local
+test-results
+e2e
+coverage
+.vscode
+.DS_Store
+lightrag-service
+marker-service
+nexusmind-docs

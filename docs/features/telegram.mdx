@@ -1,0 +1,146 @@
+---
+title: Telegram 機器人
+description: 透過 Telegram 隨時隨地與 NexusMind AI 互動
+---
+
+## 概述
+
+透過 Telegram Bot，你可以在手機上隨時與 NexusMind 的 AI 互動，不需要開瀏覽器。Bot 使用與網頁版相同的 Adaptive RAG 系統，回答基於你的知識庫。
+
+| 項目 | 值 |
+|------|-----|
+| AI 模型 | `gemini-flash` |
+| maxOutputTokens | 16,384 |
+| 路由超時 | `maxDuration = 120` 秒 |
+| 對話歷史 | 最近 10 則訊息 |
+| 閒置自動建立新對話 | 30 分鐘 |
+
+## 設定步驟
+
+1. 透過 [@BotFather](https://t.me/BotFather) 建立 Telegram Bot，取得 Token
+2. 在 NexusMind 的 **Settings** 頁面找到 Telegram 設定區塊
+3. 輸入 Bot Token，系統驗證後使用 **AES-256-GCM** 加密儲存
+4. 點擊「註冊 Webhook」，系統自動設定 Webhook 端點
+5. 在 Telegram 中與 Bot 對話，使用 `/link` 指令綁定帳號
+
+## Bot 指令
+
+| 指令 | 說明 |
+|------|------|
+| `/start` | 顯示歡迎訊息與指令說明 |
+| `/start link_CODE` | Deep Link 綁定（從網頁端點擊綁定連結觸發）|
+| `/link CODE` | 手動輸入綁定碼綁定帳號 |
+| `/unlink` | 解除 Telegram 與 NexusMind 帳號的綁定 |
+| `/newchat` | 建立新的對話，更新 `default_conversation_id` |
+
+## 帳號綁定流程
+
+### Deep Link 綁定（推薦）
+
+```
+1. 網頁端點擊「綁定 Telegram」
+2. 系統產生 6 位綁定碼，存入 telegram_link_codes 表
+3. 使用者跳轉到 Telegram，自動發送 /start link_CODE
+4. Bot 驗證綁定碼，關聯 telegram_chat_id ↔ user_id
+```
+
+### 手動綁定
+
+```
+1. 網頁端顯示綁定碼
+2. 使用者在 Telegram 中發送 /link CODE
+3. Bot 驗證並綁定
+```
+
+### 自動用戶建立
+
+若 Telegram 使用者尚未綁定，系統會自動：
+1. 建立 Auth 使用者（Email: `telegram_CHATID@nexusmind.bot`）
+2. 建立 Profile（`preferred_model: gemini-flash`）
+3. 建立預設對話（標題：「Telegram 對話」）
+4. 建立 `telegram_users` 映射
+
+## AI 回應流程
+
+```
+1. 驗證 Webhook Secret
+2. 顯示「正在輸入...」（sendChatAction: typing）
+3. 取得/建立使用者映射
+4. 儲存使用者訊息到 messages 表
+5. 載入對話歷史（最近 10 則）
+6. 執行 Adaptive RAG（向量 + BM25 + LightRAG）
+7. 組建系統提示詞（日期 + 人設 + 平台限制 + 知識庫）
+8. generateText（非串流，gemini-flash）
+9. 儲存 AI 回應到 messages 表
+10. 發送回覆 + RAG 引用來源
+```
+
+### 訊息格式處理
+
+| 處理 | 說明 |
+|------|------|
+| Markdown → HTML | `**粗體**` → `<b>`、`*斜體*` → `<i>`、code block 保留 |
+| 訊息分割 | Telegram 限制 4,096 字元，優先在換行處分割 |
+| 引用來源 | 附加在回覆訊息尾部 |
+
+### DNS 解析（NAS 環境）
+
+在 Docker 容器中，Telegram API 可能遇到 DNS 解析問題。系統使用自訂 DNS resolver：
+
+- 優先使用 `8.8.8.8` 和 `1.1.1.1`
+- 強制 IPv4（`family: 4`）
+
+## 安全機制
+
+### Token 加密
+
+| 項目 | 值 |
+|------|-----|
+| 演算法 | AES-256-GCM |
+| IV 長度 | 12 bytes |
+| Auth Tag 長度 | 16 bytes |
+| 加密金鑰 | `BOT_TOKEN_ENCRYPTION_KEY` 環境變數（32-byte hex = 64 字元）|
+| 存儲格式 | `iv + authTag + ciphertext`（hex 串接）|
+
+### Token 遮罩
+
+API 回傳時，Token 會被遮罩化：`1234***:***xyz`（前 4 碼 + 後 3 碼）。
+
+### Webhook 驗證
+
+每個 Webhook 請求必須帶有 `x-telegram-bot-api-secret-token` header：
+
+1. 優先從 DB `telegram_bot_config.webhook_secret` 驗證
+2. Fallback 到 `TELEGRAM_WEBHOOK_SECRET` 環境變數
+3. 開發模式：若兩者皆未設定，允許所有請求
+
+### Webhook 註冊流程
+
+```
+1. 取得啟用的 Bot Token
+2. 產生 webhook_secret
+   - 優先使用 TELEGRAM_WEBHOOK_SECRET 環境變數
+   - Fallback: crypto.randomUUID()（去除連字號）
+3. 呼叫 Telegram API setWebhook
+   - allowed_updates: ['message']
+4. 更新 DB: webhook_url, webhook_secret, webhook_registered_at
+```
+
+## 環境變數
+
+| 變數 | 說明 |
+|------|------|
+| `TELEGRAM_BOT_TOKEN` | Bot Token（Fallback 來源，優先使用 DB 加密版本）|
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook 驗證密鑰 |
+| `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | Bot @username（前端顯示連結用）|
+| `BOT_TOKEN_ENCRYPTION_KEY` | AES 加密金鑰（32-byte hex）|
+
+## Telegram API 端點
+
+| 操作 | 端點 | 說明 |
+|------|------|------|
+| Webhook 接收 | `POST /api/telegram/webhook` | 處理所有 Bot 訊息 |
+| 綁定帳號 | `POST /api/telegram/link` | 驗證綁定碼 |
+| 解除綁定 | `POST /api/telegram/unlink` | 刪除映射 |
+| Bot 設定 | `GET/POST /api/telegram/bot-config` | Token 管理、Webhook 註冊 |
+| Webhook 狀態 | `GET /api/telegram/webhook-status` | 查詢 Webhook 資訊 |

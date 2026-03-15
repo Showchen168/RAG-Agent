@@ -1,0 +1,136 @@
+---
+title: Knowledge Management
+description: Multi-format document upload, vector embeddings, knowledge graphs, version control, and auto-monitoring
+---
+
+## Overview
+
+Knowledge management is the core of NexusMind. After uploading documents, the system automatically completes three things:
+
+1. **Parse Content** — Extract text via Marker microservice or built-in parsers
+2. **Vector Embedding** — Store 768-dim vectors using Gemini Embedding in pgvector
+3. **Build Graph** — Create entity relationships in LightRAG
+
+## Supported Upload Formats
+
+| Format | Extension | Parsing Method | Notes |
+|--------|-----------|----------------|-------|
+| PDF | `.pdf` | Marker service → built-in `pdf-parse` (fallback) | Supports text PDFs; scanned PDFs auto-fallback to Gemini Vision OCR |
+| Word | `.docx` | Marker service → built-in `mammoth` (fallback) | Converts to HTML then Markdown, preserving headings, lists, table structure |
+| PowerPoint | `.pptx` | Marker service → built-in `officeparser` (fallback) | Extracts text from all slides |
+| Excel | `.xlsx`, `.xls` | Marker service → built-in `xlsx` (fallback) | Converts each worksheet to CSV format |
+| Plain Text | `.txt`, `.md` | Native parsing | Direct read |
+| Images | `.png`, `.jpg`, `.jpeg` | Gemini Vision OCR | AI recognizes text in images |
+
+**Max File Size: 50 MB**
+
+### Fallback Mechanism
+
+```
+Marker microservice available?
+  ├─ Yes → Use Marker for parsing
+  │       └─ Marker returns empty text?
+  │           ├─ Yes → Try Gemini Vision OCR
+  │           │       └─ OCR fails → Use built-in Parser
+  │           └─ No → Use Marker result
+  └─ No → Use built-in Parser (pdf-parse / mammoth / officeparser / xlsx)
+```
+
+## Upload Flow
+
+1. Go to the **Knowledge** page and click the "Upload" button
+2. Select files (supports multi-file batch upload)
+3. The system automatically completes the following processing:
+   - Parses document content via Marker microservice
+   - Text chunking
+   - Generates 768-dim vectors using `gemini-embedding-001`
+   - Stores in Supabase `document_sections` table (pgvector)
+   - Simultaneously indexes to LightRAG knowledge graph
+
+## YouTube Integration
+
+Besides file uploads, NexusMind can automatically capture YouTube content and add it to your knowledge base:
+
+| Type | Action | Description |
+|------|--------|-------------|
+| Single Video | Paste YouTube video link | Auto-extracts subtitles as document |
+| Playlist | Paste playlist link | Batch imports all video subtitles |
+| Channel | Enter channel ID | Auto-crawls latest video subtitles |
+
+## URL Crawling
+
+Paste any webpage URL and the system automatically extracts web content (HTML → plain text), following the same processing flow as file uploads.
+
+## Knowledge Graph
+
+Based on **LightRAG GraphRAG** technology, automatically extracts entities and relationships from documents:
+
+### LightRAG Integration
+
+| Operation | API Endpoint | Timeout |
+|-----------|-------------|---------|
+| Health Check | `GET /health` | 3 seconds |
+| Index Document | `POST /index` | 60 seconds |
+| Query Graph | `POST /query` | 15 seconds |
+| Get Graph Structure | `POST /graph` | 15 seconds |
+
+### Visualization
+
+Uses **Cytoscape.js** to render interactive knowledge graphs:
+
+- Browse entity relationships between documents
+- Click nodes to view related documents
+- Explore connections between concepts
+- Display relationship weights and types
+
+### AI Auto-Derived Relationships
+
+`POST /api/knowledge/relations` endpoint will:
+1. Calculate vector similarity between documents
+2. Use Gemini to determine relationship type (related, supplementary, conflicting, etc.)
+3. Automatically create document associations
+
+## Semantic Search
+
+`POST /api/knowledge/search` provides cross-document semantic search:
+
+- Uses pgvector's `match_document_sections` function
+- Match threshold: 0.6 (global mode) / 0.55 (single document mode)
+- RSS source articles threshold: 0.45 (semantic dilution from concatenation)
+
+## Monitoring Sources (Auto-Update)
+
+After setting up knowledge sources, the system periodically checks for updates:
+
+| Source Type | Description |
+|-------------|-------------|
+| RSS Feed | Auto-captures new articles |
+| Web URL | Monitors content changes |
+| YouTube Channel | Auto-imports new video subtitles |
+
+Trigger: Call `GET /api/cron/check-sources` (requires `CRON_SECRET` auth)
+
+```bash
+# Set up crontab for hourly checks
+0 * * * * curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  https://your-domain/api/cron/check-sources
+```
+
+## Document Version Control
+
+Each time a document is updated, the system automatically saves a historical version:
+
+| Operation | API Endpoint |
+|-----------|-------------|
+| List all versions | `GET /api/knowledge/:id/versions` (sorted by version number descending) |
+| Manual snapshot | `POST /api/knowledge/:id/versions` |
+| Get version content | `GET /api/knowledge/:id/versions/:versionId` (for diff comparison) |
+| Restore to version | `POST /api/knowledge/:id/versions/:versionId/restore` |
+
+## Document Management
+
+| Operation | Description |
+|-----------|-------------|
+| Enable/Disable | `PATCH /api/knowledge/:id` toggles `enabled` state; disabled documents don't participate in RAG |
+| Delete | `DELETE /api/knowledge/:id` cascade automatically deletes associated embeddings |
+| AI Suggestions | `GET /api/knowledge/suggestions` generates 6 natural conversation suggestions based on knowledge base content |

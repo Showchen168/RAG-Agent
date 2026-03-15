@@ -1,0 +1,170 @@
+---
+title: Canvas & Reports
+description: AI Copilot writing assistant, chart generation, report export
+---
+
+## Overview
+
+Canvas is NexusMind's rich text editor, built on **TipTap (ProseMirror)**, with built-in AI Copilot writing assistance, chart generation, and multi-format export.
+
+## TipTap Extension List
+
+| Extension | Purpose | Settings |
+|-----------|---------|----------|
+| StarterKit | Basic text editing | `link: false` |
+| Typography | Typography conversion | — |
+| Link | Link insertion | `openOnClick: false` |
+| Image | Image insertion | `inline: true, allowBase64: true` |
+| Table | Tables | `resizable: false` |
+| TableRow / TableHeader / TableCell | Table structure | — |
+| Placeholder | Placeholder hint | `"Start writing... (Cmd+J to trigger AI completion)"` |
+| AICompletion | AI Ghost Text completion | debounce: 500ms |
+| TextTransformBubble | Text transform floating menu | — |
+
+## AI Copilot Writing Assistant
+
+### Ghost Text Smart Completion
+
+While typing, press `Cmd+J` to trigger AI to show suggested continuation text (gray Ghost Text) after the cursor:
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd+J` / `Ctrl+J` | Manually trigger AI completion |
+| `Tab` | Accept Ghost Text |
+| `Escape` | Cancel Ghost Text |
+
+**Implementation Details:**
+- Ghost Text rendered via ProseMirror `Decoration.widget()` as `<span class="ghost-text">`
+- Ghost Text auto-clears on text change
+- AI takes all text before cursor as context
+
+### Copilot Completion API
+
+| Item | Value |
+|------|-------|
+| Endpoint | `POST /api/copilot/completion` |
+| Model | `gemini-flash` |
+| Temperature | 0.4 |
+| maxOutputTokens | 300 |
+| maxDuration | 60 seconds |
+| Context Length | Last 1,000 chars before cursor |
+
+If `project_id` is provided, the system takes the last 200 chars before cursor as search query for RAG search (threshold 0.7, max 3 results), injecting relevant document summaries into the prompt.
+
+### @mention Smart References
+
+Type `@` in the editor to search and reference documents from your knowledge base:
+
+- Real-time title filtering
+- Keyboard navigation (↑↓ to select, Enter to confirm)
+- Shows document title + summary
+- AI provides more precise writing suggestions based on referenced content
+
+### Slash Commands
+
+Type `/` in the editor to trigger quick commands:
+
+| Command | Label | Function |
+|---------|-------|----------|
+| `/expand` | Expand | Expand current paragraph with more details (2-3x) |
+| `/shorten` | Shorten | Condense to 1/3 - 1/2, keeping core content |
+| `/tone_professional` | Professional Tone | Rewrite in business formal tone |
+| `/tone_casual` | Casual Tone | Rewrite in friendly casual tone |
+| `/visualize` | Generate Chart | Generate visualization chart JSON from data |
+
+**Additional Copilot Commands (via API):**
+
+| Command | Function |
+|---------|----------|
+| `translate_en` | Translate to English (preserve format) |
+| `bilingual` | Chinese-English bilingual comparison |
+| `canvas_ask` | Answer questions based on document content |
+| `summarize_to_draft` | Conversation to report (with date, tables, sections) |
+
+Copilot command API (`POST /api/copilot/command`) uses `temperature: 0.7`, supports full document context injection.
+
+## Auto-Save
+
+Canvas editor has built-in auto-save:
+
+| Item | Value |
+|------|-------|
+| Debounce Delay | 3,000 ms |
+| Trigger Condition | Editor content changes + not from conversation source |
+
+## Chart Generation
+
+### Statistical Charts (Recharts)
+
+Supports bar charts, line charts, pie charts, etc., generating chart JSON data via `/visualize` command.
+
+### Topology Charts (Cytoscape.js)
+
+Used to render knowledge graphs and relationship diagrams.
+
+### Diagram Editor (draw.io Embedded)
+
+NexusMind integrates the draw.io diagram editor:
+
+| Item | Value |
+|------|-------|
+| Endpoint | `POST /api/canvas/diagram` |
+| AI Model | `gemini-3-flash-preview` |
+| Embed Source | `https://embed.diagrams.net` |
+| Language | `zh-tw` (Traditional Chinese) |
+
+**Supported Diagram Types:**
+
+| Type | Description |
+|------|-------------|
+| `flowchart` | Flowchart |
+| `sequence` | Sequence Diagram |
+| `mindmap` | Mind Map |
+| `er` | ER Diagram |
+| `class` | Class Diagram |
+| `state` | State Diagram |
+| `architecture` | Architecture Diagram |
+| `general` | General |
+
+**Operation Types:**
+- `generate`: Generate new diagram from text prompt (XML mxGraphModel format)
+- `modify`: Modify existing diagram
+- `analyze`: Analyze diagram structure (nodes, edges, description, suggestions)
+
+## Report Export
+
+| Format | Implementation | Description |
+|--------|---------------|-------------|
+| **DOCX** | `docx` v9 | Via `extractAssistantContent()` to ExportBlock |
+| **PDF** | Playwright Chromium | A4 format, margins 20/14/20/14mm, headless rendering |
+| **Markdown** | `htmlToApproxMarkdown()` | Client-side conversion |
+
+**Supported ExportBlock Types:**
+- `text`: Regular text
+- `heading`: Headings (H1/H2/H3)
+- `list`: Ordered/unordered lists
+- `table`: Tables (with header row)
+- `chart`: Charts (bar/line/pie)
+- `image`: Images
+
+**PDF Export Settings:**
+- Paper: A4
+- Margins: Top 20mm, Right 14mm, Bottom 20mm, Left 14mm
+- Background Print: Enabled
+- HTML Cleanup: Removes script, iframe, event handlers
+
+## Google Drive Import
+
+Through native **Google Drive OAuth Integration**, you can import files directly from Google Drive into Canvas for editing.
+
+## Canvas API
+
+| Operation | Endpoint | Description |
+|-----------|----------|-------------|
+| List documents | `GET /api/canvas` | All user Canvas documents |
+| Create document | `POST /api/canvas` | Supports `source_conversation_id` source tracking |
+| Get document | `GET /api/canvas/:id` | Includes TipTap JSON content |
+| Update document | `PUT /api/canvas/:id` | `updated_at` auto-updated |
+| Delete document | `DELETE /api/canvas/:id` | — |
+| Export report | `POST /api/canvas/export` | PDF / DOCX / Markdown |
+| Generate diagram | `POST /api/canvas/diagram` | generate / modify / analyze |

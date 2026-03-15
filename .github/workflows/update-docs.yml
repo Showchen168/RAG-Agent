@@ -1,0 +1,86 @@
+name: Sync Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**/*.mdx'
+      - 'docs/**/*.en.mdx'
+      - 'docs/**/meta.json'
+      - 'docs/**/meta.en.json'
+      - 'src/app/api/**'
+      - 'scripts/doc-gen/**'
+      - 'scripts/generate-api-docs.ts'
+      - 'README.md'
+      - 'CHANGELOG.md'
+  workflow_dispatch:
+
+jobs:
+  sync-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main project
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts --legacy-peer-deps
+
+      - name: Generate API docs
+        run: npx tsx scripts/generate-api-docs.ts --out /tmp/api-docs
+
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          repository: Showchen168/nexusmind-docs
+          token: ${{ secrets.DOCS_DEPLOY_TOKEN }}
+          path: nexusmind-docs-repo
+
+      - name: Sync manual docs + API docs
+        run: |
+          # 同步手動撰寫的文件（index.mdx, meta.json, 各子目錄）
+          cp docs/meta.json docs/meta.en.json nexusmind-docs-repo/content/docs/ 2>/dev/null || true
+          cp docs/index.mdx docs/index.en.mdx nexusmind-docs-repo/content/docs/ 2>/dev/null || true
+          for dir in getting-started features deployment; do
+            if [ -d "docs/$dir" ]; then
+              mkdir -p "nexusmind-docs-repo/content/docs/$dir"
+              cp docs/$dir/*.mdx docs/$dir/meta.json docs/$dir/meta.en.json "nexusmind-docs-repo/content/docs/$dir/" 2>/dev/null || true
+            fi
+          done
+          # 同步 README 和 CHANGELOG 作為頂層參考
+          echo "---" > nexusmind-docs-repo/content/docs/README.md
+          echo "title: 專案介紹" >> nexusmind-docs-repo/content/docs/README.md
+          echo "description: NexusMind 核心系統與架構簡介" >> nexusmind-docs-repo/content/docs/README.md
+          echo "---" >> nexusmind-docs-repo/content/docs/README.md
+          cat README.md >> nexusmind-docs-repo/content/docs/README.md || true
+          
+          echo "---" > nexusmind-docs-repo/content/docs/CHANGELOG.md
+          echo "title: 更新日誌" >> nexusmind-docs-repo/content/docs/CHANGELOG.md
+          echo "description: 系統版本更新與變更紀錄" >> nexusmind-docs-repo/content/docs/CHANGELOG.md
+          echo "---" >> nexusmind-docs-repo/content/docs/CHANGELOG.md
+          cat CHANGELOG.md >> nexusmind-docs-repo/content/docs/CHANGELOG.md || true
+          
+          # 同步自動生成的 API 文件
+          mkdir -p nexusmind-docs-repo/content/docs/api
+          cp -r /tmp/api-docs/* nexusmind-docs-repo/content/docs/api/
+      - name: Check for changes
+        id: diff
+        working-directory: nexusmind-docs-repo
+        run: |
+          git diff --quiet && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        working-directory: nexusmind-docs-repo
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add content/docs/
+          git commit -m "docs: sync from nexusmind @ $SHORT_SHA"
+          git push

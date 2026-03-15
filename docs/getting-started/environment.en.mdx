@@ -1,0 +1,98 @@
+---
+title: Environment Variables
+description: Complete guide to all NexusMind environment variables
+---
+
+## Required Variables
+
+The following variables are **required**. The system will not function properly without any of them:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (visible to frontend) | `https://xxx.supabase.co` or `http://127.0.0.1:54321` (local) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anonymous key (frontend RLS auth) | `eyJhbGci...` |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key (backend bypasses RLS) | `eyJhbGci...` |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | Google Gemini API Key (AI chat + embeddings) | `AIzaSy...` |
+| `CRON_SECRET` | Cron job auth secret (prevents unauthorized access to `/api/cron/*`) | Any strong password string |
+
+## Microservice Connections
+
+Automatically resolved via container network in Docker Compose; manual setup needed for local development:
+
+| Variable | Docker Default | Local Dev Value | Description |
+|----------|---------------|-----------------|-------------|
+| `MARKER_SERVICE_URL` | `http://marker:8001` | `http://localhost:8001` | Marker document parsing service |
+| `LIGHTRAG_SERVICE_URL` | `http://lightrag:8002` | `http://localhost:8002` | LightRAG knowledge graph service |
+| `SKILL_EXECUTOR_URL` | `http://skill-executor:8003` | `http://localhost:8003` | Docker-in-Docker skill execution sandbox |
+
+## Optional Variables
+
+Set these to enable corresponding features:
+
+
+
+### Google OAuth Login
+
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Client Secret |
+| `USE_OAUTH` | Set to `true` to use OAuth Token for Gemini API calls (replaces API Key) |
+
+### Telegram Bot
+
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token (created via [@BotFather](https://t.me/BotFather)) |
+| `TELEGRAM_WEBHOOK_SECRET` | Webhook signature verification secret (custom strong password) |
+| `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` | Bot username (without `@`, for frontend link display) |
+
+### Observability
+
+| Variable | Description |
+|----------|-------------|
+| `LANGFUSE_PUBLIC_KEY` | Langfuse tracing public key (AI SDK spans observability) |
+| `LANGFUSE_SECRET_KEY` | Langfuse tracing secret key |
+| `LANGFUSE_BASEURL` | Langfuse service endpoint (self-hosted or cloud) |
+
+## Configuration
+
+### Local Development
+
+```bash
+# Copy template
+cp .env.production.example .env.local
+
+# Edit and fill in actual values
+# Use localhost for microservice URLs
+# MARKER_SERVICE_URL=http://localhost:8001
+# LIGHTRAG_SERVICE_URL=http://localhost:8002
+```
+
+### Docker Deployment
+
+```bash
+# Copy template
+cp .env.production.example .env.production
+
+# Edit and fill in actual values
+# Use Docker container names for microservice URLs (auto-resolved)
+# MARKER_SERVICE_URL=http://marker:8001
+# LIGHTRAG_SERVICE_URL=http://lightrag:8002
+```
+
+Public variables (`NEXT_PUBLIC_*`) must be passed as **Build Args** (embedded in frontend at build time):
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+  -t nexusmind-app:latest .
+```
+
+## Security Notes
+
+- `.env.local` and `.env.production` are excluded in `.gitignore` — **never commit to Git**
+- `SUPABASE_SERVICE_ROLE_KEY` has full permissions bypassing RLS — backend use only
+- Telegram Bot Token is stored encrypted with **AES-256-GCM** in the database
+- `CRON_SECRET` protects scheduled endpoints from unauthorized external triggers

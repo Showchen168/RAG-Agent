@@ -1,0 +1,215 @@
+---
+title: Skill System
+description: Let AI not just answer but also execute code and generate documents
+---
+
+## Overview
+
+The skill system lets AI not just answer questions, but actually execute code and produce various document formats. All code runs in Docker containers with complete network isolation.
+
+| Item | Value |
+|------|-------|
+| AI Model | `gemini-3-pro-preview` (intent / research / engineering) |
+| Route Timeout | `maxDuration = 300` seconds |
+| Frontend Timeout | 60 seconds (auto-switches to polling on timeout) |
+| Polling Interval | Every 5 seconds, max 5 minutes |
+
+## Three-Phase Execution Flow
+
+### Phase 0: Intent Analysis
+
+AI analyzes whether user requirements are sufficiently clear.
+
+| Item | Value |
+|------|-------|
+| Model | `gemini-3-pro-preview` |
+| maxOutputTokens | 16,384 |
+| Criteria | Is the topic/focus clear? Is information sufficient? |
+
+**Branch Logic:**
+- Requirements sufficient → Output `__READY_TO_GENERATE__`, proceed to Phase 1
+- Requirements insufficient → Return clarification message (supports Markdown), abort subsequent flow
+
+### Phase 0.5: RAG Knowledge Base Query (Optional)
+
+After passing Phase 0, the system automatically queries the user's knowledge base (`executeAdaptiveRAG`), injecting relevant content into subsequent phase prompts. Graceful degradation on query failure — does not interrupt main flow.
+
+### Phase 1: Researcher + Writer
+
+AI proactively searches for latest data and writes a complete report.
+
+| Item | Value |
+|------|-------|
+| Model | `gemini-3-pro-preview` |
+| Phase 1: Content Writing | Writes initial report content based on facts |
+| System Prompt | `WRITER_SYSTEM_PROMPT` |
+| Search Support | Triggers Google Search API on demand |
+
+**Content Length Reference:**
+
+| User-specified Pages | Target Word Count |
+|---------------------|-------------------|
+| 1 page | 500-600 words |
+| 5 pages | 2,500-3,000 words |
+| 10 pages | 5,000-6,000 words |
+| 20 pages | 10,000-12,000 words |
+
+**Report Structure:**
+- Summary (200-300 words)
+- 5-8 sections
+- At least 3 data tables
+- References
+
+### Phase 2: Layout Engineer
+
+Based on Phase 1 report (first 1,500 words excerpt), produces:
+
+| Item | Value |
+|------|-------|
+| Model | `gemini-3-pro-preview` |
+| maxOutputTokens | 65,536 |
+
+**Output:**
+1. Description text
+2. Modification suggestions (`:::suggestions` syntax, 3 items)
+3. Cover configuration JSON (title, subtitle, date, filename)
+
+Phase 2 output is merged with Phase 1 report using `---FULL_REPORT_CONTENT---` delimiter, passed to Docker container.
+
+## Skill Configuration Structure
+
+Each skill is defined by `SkillConfig`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique skill identifier |
+| `displayName` | string | UI display name (2-50 chars) |
+| `description` | string | Description (10-200 chars) |
+| `icon` | string | lucide-react icon name |
+| `category` | string | `document` / `data` / `creative` / `utility` |
+| `input.type` | string | `context` (conversation history) / `user` (user input) / `both` |
+| `output.fileType` | string | e.g., `docx`, `xlsx` |
+| `output.mimeType` | string | MIME type |
+| `output.previewFormat` | string | `markdown` / `plaintext` / `image` |
+| `runtime.baseImage` | string | Docker image (e.g., `nexusmind-skill-runtime:node-20`) |
+| `runtime.timeout` | number | Seconds |
+| `runtime.maxMemory` | string | e.g., `512m`, `1g` |
+
+## Docker Sandbox Execution
+
+### Supported Languages
+
+| Language | Runtime | Image |
+|----------|---------|-------|
+| JavaScript | Node.js 20 | `nexusmind-skill-runtime:node-20` |
+| Python | Python 3.11 | `python:3.11` |
+
+### Runtime Image Pre-installed Packages
+
+Skill runtime based on `nikolaik/python-nodejs:python3.11-nodejs20-slim`:
+
+- **npm**: `docx` (Word document generation)
+- **Python**: `defusedxml`, `lxml`
+- **Node module path**: `NODE_PATH=/usr/local/skill-modules/node_modules`
+
+### Container Security Settings
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| NetworkMode | `none` | Complete network isolation |
+| CapDrop | `ALL` | Remove all Linux capabilities |
+| MemorySwap | Equal to Memory | Disable swap |
+| Binds | `/scripts:ro` | Script directory read-only mount |
+
+### Image Whitelist
+
+Only these image prefixes are allowed: `node:`, `python:`, `alpine:`, `ubuntu:`, `nexusmind-skill-runtime:`
+
+## Output Formats
+
+| Format | Description | Implementation |
+|--------|-------------|----------------|
+| **DOCX** | Word document | Built-in docx v9 API, Markdown → DOCX conversion |
+| **PDF** | PDF document | Playwright headless rendering |
+| **PNG** | Image | Code generation |
+| **JSON** | Structured data | Code generation |
+
+### Markdown → DOCX Conversion
+
+JavaScript skills auto-generate a `_converter.js` script supporting:
+- `#` / `##` / `###` / `####` headings
+- Markdown tables
+- `**bold**` and `*italic*`
+- Auto page breaks and paragraph spacing
+- Cover page (title, subtitle, date)
+
+## AI-Generated Skills
+
+You can create new skills through natural language descriptions.
+
+### Generation Limits
+
+| Parameter | Value |
+|-----------|-------|
+| Model | `gemini-2.0-flash` |
+| Conversation History Limit | 30,000 characters |
+| Single Message Limit | 2,000 characters |
+| displayName | 2-50 chars |
+| description | 10-200 chars |
+| prompt_template | 20-5,000 chars |
+
+### Clarification Questions
+
+When requirements are unclear, AI generates 3-5 clarification questions:
+
+| Question Type | Description |
+|---------------|-------------|
+| `text` | Free text input |
+| `select` | Single selection |
+| `multiselect` | Multiple selection |
+
+## Progress Animation
+
+Skill execution shows 6 progress stages:
+
+| Time Threshold | Stage | Icon |
+|---------------|-------|------|
+| 0 seconds | Initializing skill environment | Settings |
+| 5 seconds | Analyzing input requirements | Search |
+| 15 seconds | Searching relevant data | Globe |
+| 40 seconds | Generating report content | FileText |
+| 90 seconds | Executing document processing | Cog |
+| 150 seconds | Final cleanup | Sparkles |
+
+Progress uses Braille Unicode spinner (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, 80ms refresh).
+
+## Polling Mechanism
+
+When frontend times out at 60 seconds or on network error, auto-switches to polling mode:
+
+```
+GET /api/skills/execute/status?messageId=xxx
+
+Response statuses:
+  - "processing" → Message content is empty, continue polling
+  - "failed"     → Message is "(Skill execution failed)"
+  - "completed"  → Returns attachment + message content
+```
+
+| Parameter | Value |
+|-----------|-------|
+| Polling Interval | 5 seconds |
+| Max Polling Duration | 300 seconds (5 minutes) |
+
+## Skill Management API
+
+| Operation | Endpoint |
+|-----------|----------|
+| List skills | `GET /api/skills` |
+| Create skill | `POST /api/skills` |
+| Update skill | `PUT /api/skills/:id` |
+| Delete skill | `DELETE /api/skills/:id` |
+| Execute skill | `POST /api/skills/execute` |
+| Check status | `GET /api/skills/execute/status` |
+| Clarification | `POST /api/skills/clarify` |
+| Generate skill | `POST /api/skills/generate` |

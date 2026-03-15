@@ -1,0 +1,103 @@
+name: nexusmind
+
+services:
+  # ---- Next.js 主應用 ----
+  app:
+    container_name: nexusmind-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.production
+    environment:
+      - NODE_ENV=production
+      - HOSTNAME=0.0.0.0
+      - PORT=3000
+      # 容器內部透過 Docker 網路連接微服務
+      - MARKER_SERVICE_URL=http://marker:8001
+      - LIGHTRAG_SERVICE_URL=http://lightrag:8002
+      - SKILL_EXECUTOR_URL=http://skill-executor:8003
+    depends_on:
+      marker:
+        condition: service_healthy
+      lightrag:
+        condition: service_healthy
+      skill-executor:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ---- Marker 文件解析微服務 ----
+  marker:
+    container_name: nexusmind-marker
+    build: ./marker-service
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # ---- LightRAG GraphRAG 微服務 ----
+  lightrag:
+    container_name: nexusmind-lightrag
+    build: ./lightrag-service
+    ports:
+      - "8002:8002"
+    env_file:
+      - .env.production
+    volumes:
+      - lightrag-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # ---- Skill Executor 技能容器執行微服務 ----
+  skill-executor:
+    container_name: nexusmind-skill-executor
+    build: ./skill-executor-service
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - skills-data:/data/skills
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  lightrag-data:
+  skills-data:

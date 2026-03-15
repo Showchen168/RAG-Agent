@@ -1,0 +1,141 @@
+---
+title: AI 模型配置
+description: 模型選用策略、嵌入向量、Vision OCR 與降級機制
+---
+
+## 概述
+
+NexusMind 使用 Google **Gemini** 系列模型，針對不同場景選用不同模型，並內建完整的降級機制確保服務穩定。
+
+## 模型一覽
+
+| 用途 | 模型 | Temperature | maxOutputTokens | 說明 |
+|------|------|-------------|-----------------|------|
+| **AI 對話（Flash）** | `gemini-3-flash-preview` | — | — | 主要對話模型，5 步工具呼叫 |
+| **AI 對話（Pro）** | `gemini-3.1-pro-preview` | — | — | 進階推理模型，複雜任務專用 |
+| **AI 對話（Lite）** | `gemini-3.1-flash-lite-preview` | — | — | 輕量快速模型，簡單查詢專用 |
+| **嵌入向量** | `gemini-embedding-001` | — | — | 768 維向量，用於 RAG |
+| **Copilot 補全** | `gemini-flash` → `gemini-3-flash-preview` | 0.4 | 300 | Ghost Text 寫作補全 |
+| **Copilot 指令** | `gemini-flash` → `gemini-3-flash-preview` | 0.7 | — | Slash Commands、翻譯 |
+| **技能系統** | `gemini-3-pro-preview` | — | 16K-65K | 意圖判斷 / 研究 / 排版 |
+| **圖表生成** | `gemini-3-flash-preview` | — | — | draw.io XML 產出 |
+| **知識圖譜 LLM** | `gemini-2.0-flash` | — | — | LightRAG 實體關係抽取 |
+| **技能生成** | `gemini-2.0-flash` | — | — | AI 產生技能定義 |
+| **Vision OCR** | Gemini Vision | — | — | 圖片文字辨識降級方案 |
+| **Telegram Bot** | `gemini-flash` → `gemini-3-flash-preview` | — | 16,384 | 行動端對話 |
+| **對話標題生成** | `gemini-3-flash-preview` | — | — | 首次對話自動生成標題 |
+
+### 模型映射（Provider 配置）
+
+| UI 選擇 | 實際呼叫模型 |
+|---------|---------------|
+| `gemini-flash` | `gemini-3-flash-preview` |
+| `gemini-pro` | `gemini-3.1-pro-preview` |
+| `gemini-flash-lite` | `gemini-3.1-flash-lite-preview` |
+
+## 嵌入向量配置
+
+| 項目 | 值 |
+|------|-----|
+| 模型 | `gemini-embedding-001` |
+| 向量維度 | 768 |
+| 儲存 | Supabase pgvector（HNSW 索引） |
+| 索引參數 | m=16, ef_construction=64 |
+| 相似度 | cosine（`vector_cosine_ops`） |
+
+嵌入向量在以下場景產生：
+
+1. **文件上傳** — 每個 chunk 產生一個 768 維向量
+2. **RAG 查詢** — 使用者問題轉為向量後與文件向量比對
+3. **記憶搜尋** — 使用者記憶的語意搜尋
+
+## Vision OCR 機制
+
+當文件解析結果為空文字時（通常是掃描型 PDF 或圖片），系統自動啟用 Gemini Vision OCR：
+
+```
+文件上傳
+  → Marker 微服務解析
+  → 結果為空？
+    ├─ 否 → 使用 Marker 結果
+    └─ 是 → Gemini Vision OCR
+          → 結果為空？
+            ├─ 否 → 使用 OCR 結果
+            └─ 是 → 使用內建 Parser（最終降級）
+```
+
+**支援 Vision OCR 的格式：**
+
+| 格式 | 說明 |
+|------|------|
+| `.png`, `.jpg`, `.jpeg` | 直接送入 Vision 模型 |
+| `.pdf`（掃描型） | Marker 返回空文字時降級 |
+
+## API Key 配置
+
+### 基本配置
+
+```bash
+# .env.local
+GOOGLE_GENERATIVE_AI_API_KEY=AIzaSy...
+```
+
+所有 Gemini 模型共用同一個 API Key。
+
+### OAuth Token 模式（選用）
+
+```bash
+USE_OAUTH=true
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+啟用前需執行一次性授權：
+
+```bash
+npx gemini init
+```
+
+OAuth 模式適用於需要更高配額或 Google Workspace 整合的場景。
+
+## 串流配置
+
+AI 對話使用 Vercel AI SDK 的 `streamText` 實現串流回覆：
+
+| 項目 | 值 |
+|------|-----|
+| SDK | `ai` v6（Vercel AI SDK） |
+| 串流延遲 | 5 ms |
+| 分割方式 | `Intl.Segmenter`（Unicode grapheme）|
+| 支援 | 中文逐字流、Emoji 不斷裂 |
+| 路由超時 | 300 秒（`maxDuration`） |
+| 心跳間隔 | 15 秒（防止連線逾時） |
+
+### SSE 心跳機制
+
+長時間運行的研究任務會定期發送心跳訊號，防止反向代理（如 Nginx）或 NAS 環境中的連線超時：
+
+```
+每 15 秒發送一次 SSE 心跳（空 comment）
+→ 保持 HTTP 連線存活
+→ 任務完成後清除心跳計時器
+```
+
+
+
+## 可觀測性（Langfuse）
+
+設定以下環境變數啟用 AI 呼叫追蹤：
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+LANGFUSE_BASEURL=https://cloud.langfuse.com  # 或自建端點
+```
+
+啟用後可在 Langfuse Dashboard 看到：
+
+- 每次 AI 呼叫的 token 使用量
+- 延遲與成功率
+- Prompt 版本追蹤
+- 成本分析

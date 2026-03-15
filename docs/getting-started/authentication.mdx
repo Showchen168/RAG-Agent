@@ -1,0 +1,174 @@
+---
+title: 認證與登入
+description: Google OAuth 登入、Session 管理、路由保護機制
+---
+
+## 概述
+
+NexusMind 使用 **Supabase Auth** 搭配 **Google OAuth 2.0** 提供使用者認證。所有敏感頁面受 Middleware 保護，未登入使用者會自動導向登入頁。
+
+## 認證方式
+
+### Google OAuth 登入（推薦）
+
+| 項目 | 值 |
+|------|-----|
+| Provider | Google OAuth 2.0 |
+| Callback | `/api/auth/callback` |
+| 預設跳轉 | `/chat` |
+
+**設定步驟：**
+
+1. 前往 [Google Cloud Console](https://console.cloud.google.com/) 建立 OAuth 2.0 用戶端
+2. 設定授權重新導向 URI：`https://your-supabase-project.supabase.co/auth/v1/callback`
+3. 在 Supabase Dashboard → Authentication → Providers → Google 啟用並填入 Client ID / Secret
+4. 在 `.env.local` 設定：
+
+```bash
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+### Email / Password 登入
+
+Supabase Auth 內建支援 Email 登入，可在 Supabase Dashboard 啟用。
+
+### Telegram 自動帳號建立
+
+未綁定的 Telegram 使用者首次傳訊時，系統自動：
+
+1. 建立 Auth 使用者（Email: `telegram_CHATID@nexusmind.bot`）
+2. 建立 Profile（`preferred_model: gemini-flash`）
+3. 建立預設對話（標題：「Telegram 對話」）
+4. 建立 `telegram_users` 映射
+
+## OAuth 回調流程
+
+```
+使用者點擊「Google 登入」
+  → Supabase Auth 導向 Google 授權頁
+  → 使用者同意授權
+  → Google 回調到 Supabase
+  → Supabase 回調到 /api/auth/callback?code=xxx
+  → exchangeCodeForSession(code) 交換 JWT
+  → 設定 Session Cookie
+  → 重導向至 /chat（或 next 參數指定的頁面）
+```
+
+**安全措施：**
+
+- `next` 參數驗證：必須以 `/` 開頭且不能以 `//` 開頭（防止 Open Redirect）
+- 失敗時導向 `/login?error=auth_callback_error`
+
+## Session 管理
+
+### Cookie 機制
+
+| 項目 | 值 |
+|------|-----|
+| Cookie 名稱 | `sb-{hostname}-auth-token` |
+| 格式 | Supabase SSR chunked cookies |
+| 分塊 | 大型 JWT 自動分塊為 `sb-*-auth-token.0`、`.1`、`.2`... |
+
+### Supabase 雙 URL 策略（Docker 環境）
+
+在 Docker 部署時，瀏覽器和伺服器看到的 Supabase URL 可能不同：
+
+| 環境 | 變數 | 用途 | 範例 |
+|------|------|------|------|
+| 瀏覽器 | `NEXT_PUBLIC_SUPABASE_URL` | Build-time 寫入前端 | `https://supabase.example.com` |
+| 伺服器 | `SUPABASE_SERVER_URL` | Runtime 內網直連 | `http://192.168.0.7:54321` |
+
+當 Server URL 與 Client URL hostname 不同時，系統自動覆蓋 Cookie 名稱：
+
+```
+Cookie Name = sb-{clientHostname}-auth-token
+```
+
+確保伺服器端能正確讀取瀏覽器設定的 Session Cookie。
+
+## Middleware 路由保護
+
+### 受保護的路由
+
+| 路由 | 說明 |
+|------|------|
+| `/chat` | AI 對話 |
+| `/knowledge` | 知識庫 |
+| `/settings` | 帳號設定 |
+| `/dashboard` | 儀表板 |
+| `/reports` | 報告 |
+
+### 保護邏輯
+
+```
+收到請求
+  → 檢查 cookie 是否包含 sb-*-auth-token
+  │
+  ├─ 未登入 + 存取保護路由 → 重導向 /login
+  ├─ 已登入 + 存取 /login 或 /register → 重導向 /chat
+  └─ 其他 → 放行
+```
+
+**設計特點：**
+
+- **Lightweight Edge Runtime**：只做 Cookie 存在性檢查，不呼叫 Supabase API，減少延遲
+- **Session 過期處理**：支援 `?session_expired=1` 參數，自動清除失效 Cookies
+- 靜態資源（`_next/static`、`favicon.ico`）不經過 Middleware
+
+## Row Level Security (RLS)
+
+所有資料表啟用 RLS，確保使用者只能存取自己的資料：
+
+| 存取模式 | 說明 | 適用表 |
+|---------|------|--------|
+| 只看自己 | `auth.uid() = user_id` | profiles, conversations, documents, canvas_documents |
+| 間接存取 | 透過父表 JOIN 驗證 | messages（via conversations）, document_embeddings（via documents） |
+| 自己 + 公開 | 自己的 OR `is_public = true` | prompt_templates |
+| 已認證可讀 | 所有登入使用者皆可讀 | assistant_presets |
+| Service Role | 僅後端 admin client | telegram_users, telegram_bot_config, telegram_link_codes |
+
+## Supabase Client 架構
+
+### 瀏覽器端（Client Component）
+
+```typescript
+import { createBrowserClient } from '@supabase/ssr'
+
+// 使用 NEXT_PUBLIC_* 變數（Build-time 寫死）
+const supabase = createBrowserClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+)
+```
+
+### 伺服器端（Server Component / Route Handler）
+
+```typescript
+import { createServerClient } from '@supabase/ssr'
+
+// 優先使用 SUPABASE_SERVER_URL（Docker 內網）
+// Fallback 到 NEXT_PUBLIC_SUPABASE_URL
+const supabase = createServerClient(supabaseUrl, supabaseKey, {
+  cookieOptions: { name: cookieName }, // 必要時覆蓋 cookie name
+  cookies: { getAll, setAll }
+})
+```
+
+### Admin Client（繞過 RLS）
+
+```typescript
+import { createClient } from '@supabase/supabase-js'
+
+// 使用 SUPABASE_SERVICE_ROLE_KEY，不處理 cookies
+// 用於 Telegram 自動建立使用者、系統背景任務等
+const adminClient = createClient(url, serviceRoleKey)
+```
+
+## OAuth Token 模式（進階）
+
+設定 `USE_OAUTH=true` 後，系統使用 OAuth Token 而非 API Key 呼叫 Gemini API：
+
+1. 執行 `npx gemini init` 完成一次性授權
+2. 系統使用 OAuth Token 呼叫 Google Generative AI API
+3. 適用於需要更高配額或特殊權限的場景

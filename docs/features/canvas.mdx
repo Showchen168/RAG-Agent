@@ -1,0 +1,170 @@
+---
+title: Canvas 與報告
+description: AI Copilot 寫作助手、圖表生成、報告匯出
+---
+
+## 概述
+
+Canvas 是 NexusMind 的富文本編輯器，基於 **TipTap (ProseMirror)** 建構，內建 AI Copilot 寫作輔助、圖表生成、多格式匯出功能。
+
+## TipTap 擴充列表
+
+| 擴充 | 用途 | 設定 |
+|------|------|------|
+| StarterKit | 基礎文字編輯 | `link: false` |
+| Typography | 排版轉換 | — |
+| Link | 連結插入 | `openOnClick: false` |
+| Image | 圖片插入 | `inline: true, allowBase64: true` |
+| Table | 表格 | `resizable: false` |
+| TableRow / TableHeader / TableCell | 表格結構 | — |
+| Placeholder | 佔位符提示 | `"開始寫作... (Cmd+J 觸發 AI 完成)"` |
+| AICompletion | AI Ghost Text 補全 | debounce: 500ms |
+| TextTransformBubble | 文字轉換浮動菜單 | — |
+
+## AI Copilot 寫作助手
+
+### Ghost Text 智慧補全
+
+當你正在打字時，按 `Cmd+J` 可觸發 AI 在游標後方顯示建議的續寫內容（灰色 Ghost Text）：
+
+| 快捷鍵 | 動作 |
+|--------|------|
+| `Cmd+J` / `Ctrl+J` | 手動觸發 AI 補全 |
+| `Tab` | 接受 Ghost Text |
+| `Escape` | 取消 Ghost Text |
+
+**實作細節：**
+- Ghost Text 透過 ProseMirror `Decoration.widget()` 渲染為 `<span class="ghost-text">`
+- 文字變更時自動清除 Ghost Text
+- AI 取游標前所有文字作為上下文
+
+### Copilot 完成 API
+
+| 項目 | 值 |
+|------|-----|
+| 端點 | `POST /api/copilot/completion` |
+| 模型 | `gemini-flash` |
+| Temperature | 0.4 |
+| maxOutputTokens | 300 |
+| maxDuration | 60 秒 |
+| 上下文長度 | 游標前最後 1,000 字 |
+
+若提供 `project_id`，系統會取游標前最後 200 字作為搜尋查詢，進行 RAG 搜尋（閾值 0.7，最多 3 筆），將相關文件摘要注入 prompt。
+
+### @mention 智慧引用
+
+在編輯器中輸入 `@`，可以搜尋並引用知識庫中的文件：
+
+- 即時過濾文件標題
+- 鍵盤導航（↑↓ 選擇、Enter 確認）
+- 顯示文件標題 + 摘要
+- AI 會基於引用的內容提供更精準的寫作建議
+
+### Slash Commands
+
+在編輯器中輸入 `/` 觸發快速指令：
+
+| 指令 | 標籤 | 功能 |
+|------|------|------|
+| `/expand` | 擴寫 | 擴展當前段落，增加更多細節（2-3 倍）|
+| `/shorten` | 精簡 | 精簡至 1/3 - 1/2，保留核心內容 |
+| `/tone_professional` | 專業語氣 | 改寫為商業正式語氣 |
+| `/tone_casual` | 輕鬆語氣 | 改寫為輕鬆友善語氣 |
+| `/visualize` | 生成圖表 | 根據數據生成視覺化圖表 JSON |
+
+**額外 Copilot 指令（透過 API）：**
+
+| 指令 | 功能 |
+|------|------|
+| `translate_en` | 翻譯為英文（保持格式）|
+| `bilingual` | 中英雙語對照 |
+| `canvas_ask` | 根據文件內容回答問題 |
+| `summarize_to_draft` | 對話轉報告（含日期、表格、分節）|
+
+Copilot 指令 API（`POST /api/copilot/command`）使用 `temperature: 0.7`，支援注入完整文件上下文。
+
+## 自動儲存
+
+Canvas 編輯器內建自動儲存功能：
+
+| 項目 | 值 |
+|------|-----|
+| Debounce 延遲 | 3,000 ms |
+| 觸發條件 | 編輯器內容變更 + 非來自對話來源 |
+
+## 圖表生成
+
+### 統計圖表（Recharts）
+
+支援長條圖、折線圖、圓餅圖等，透過 `/visualize` 指令生成圖表 JSON 資料。
+
+### 拓撲圖表（Cytoscape.js）
+
+用於渲染知識圖譜等關係圖。
+
+### 圖表編輯器（draw.io 嵌入）
+
+NexusMind 整合 draw.io 圖表編輯器：
+
+| 項目 | 值 |
+|------|-----|
+| 端點 | `POST /api/canvas/diagram` |
+| AI 模型 | `gemini-3-flash-preview` |
+| 嵌入來源 | `https://embed.diagrams.net` |
+| 語言 | `zh-tw`（繁體中文）|
+
+**支援的圖表類型：**
+
+| 類型 | 說明 |
+|------|------|
+| `flowchart` | 流程圖 |
+| `sequence` | 循序圖 |
+| `mindmap` | 心智圖 |
+| `er` | ER 圖 |
+| `class` | 類別圖 |
+| `state` | 狀態圖 |
+| `architecture` | 架構圖 |
+| `general` | 通用 |
+
+**操作類型：**
+- `generate`：根據文字提示生成新圖表（XML mxGraphModel 格式）
+- `modify`：修改現有圖表
+- `analyze`：分析圖表結構（節點數、邊數、描述、建議）
+
+## 報告匯出
+
+| 格式 | 技術實作 | 說明 |
+|------|---------|------|
+| **DOCX** | `docx` v9 | 透過 `extractAssistantContent()` 轉為 ExportBlock |
+| **PDF** | Playwright Chromium | A4 格式，邊距 20/14/20/14mm，headless 渲染 |
+| **Markdown** | `htmlToApproxMarkdown()` | 客戶端轉換 |
+
+**支援的 ExportBlock 類型：**
+- `text`：一般文字
+- `heading`：標題（H1/H2/H3）
+- `list`：有序/無序列表
+- `table`：表格（含標題列）
+- `chart`：圖表（bar/line/pie）
+- `image`：圖片
+
+**PDF 匯出設定：**
+- 紙張：A4
+- 邊距：上 20mm、右 14mm、下 20mm、左 14mm
+- 背景列印：啟用
+- HTML 清理：移除 script、iframe、event handlers
+
+## Google Drive 匯入
+
+現已支援直接透過 Google Drive 原生 OAuth API 整合，可以直接從 Google Drive 匯入文件到 Canvas 中編輯。
+
+## Canvas API
+
+| 操作 | 端點 | 說明 |
+|------|------|------|
+| 列出文件 | `GET /api/canvas` | 使用者所有 Canvas 文件 |
+| 建立文件 | `POST /api/canvas` | 支援 `source_conversation_id` 來源追蹤 |
+| 取得文件 | `GET /api/canvas/:id` | 含 TipTap JSON 內容 |
+| 更新文件 | `PUT /api/canvas/:id` | `updated_at` 自動更新 |
+| 刪除文件 | `DELETE /api/canvas/:id` | — |
+| 匯出報告 | `POST /api/canvas/export` | PDF / DOCX / Markdown |
+| 生成圖表 | `POST /api/canvas/diagram` | generate / modify / analyze |

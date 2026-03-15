@@ -1,0 +1,141 @@
+---
+title: AI Model Configuration
+description: Model selection strategy, vector embeddings, Vision OCR, and fallback mechanisms
+---
+
+## Overview
+
+NexusMind uses Google **Gemini** model family, selecting different models for different scenarios, with built-in fallback mechanisms for service stability.
+
+## Model Overview
+
+| Usage | Model | Temperature | maxOutputTokens | Description |
+|-------|-------|-------------|-----------------|-------------|
+| **AI Chat (Flash)** | `gemini-3-flash-preview` | — | — | Primary chat model, 5 tool call steps |
+| **AI Chat (Pro)** | `gemini-3.1-pro-preview` | — | — | Advanced reasoning model for complex tasks |
+| **AI Chat (Lite)** | `gemini-3.1-flash-lite-preview` | — | — | Lightweight fast model for simple queries |
+| **Embedding** | `gemini-embedding-001` | — | — | 768-dim vectors for RAG |
+| **Copilot Completion** | `gemini-flash` → `gemini-3-flash-preview` | 0.4 | 300 | Ghost Text writing completion |
+| **Copilot Commands** | `gemini-flash` → `gemini-3-flash-preview` | 0.7 | — | Slash Commands, translations |
+| **Skills System** | `gemini-3-pro-preview` | — | 16K-65K | Intent / Research / Layout |
+| **Diagram Generation** | `gemini-3-flash-preview` | — | — | draw.io XML output |
+| **Knowledge Graph LLM** | `gemini-2.0-flash` | — | — | LightRAG entity extraction |
+| **Skill Generation** | `gemini-2.0-flash` | — | — | AI-generated skill definitions |
+| **Vision OCR** | Gemini Vision | — | — | Image text recognition fallback |
+| **Telegram Bot** | `gemini-flash` → `gemini-3-flash-preview` | — | 16,384 | Mobile chat |
+| **Title Generation** | `gemini-3-flash-preview` | — | — | Auto-generate conversation titles |
+
+### Model Mapping (Provider Config)
+
+| UI Selection | Actual Model Called |
+|-------------|--------------------|
+| `gemini-flash` | `gemini-3-flash-preview` |
+| `gemini-pro` | `gemini-3.1-pro-preview` |
+| `gemini-flash-lite` | `gemini-3.1-flash-lite-preview` |
+
+## Embedding Configuration
+
+| Item | Value |
+|------|-------|
+| Model | `gemini-embedding-001` |
+| Vector Dimensions | 768 |
+| Storage | Supabase pgvector (HNSW index) |
+| Index Parameters | m=16, ef_construction=64 |
+| Similarity | cosine (`vector_cosine_ops`) |
+
+Embeddings are generated in these scenarios:
+
+1. **Document Upload** — Each chunk generates a 768-dim vector
+2. **RAG Query** — User questions converted to vectors for document matching
+3. **Memory Search** — Semantic search of user memories
+
+## Vision OCR Mechanism
+
+When document parsing returns empty text (typically scanned PDFs or images), the system automatically activates Gemini Vision OCR:
+
+```
+Document upload
+  → Marker microservice parsing
+  → Result is empty?
+    ├─ No → Use Marker result
+    └─ Yes → Gemini Vision OCR
+          → Result is empty?
+            ├─ No → Use OCR result
+            └─ Yes → Use built-in Parser (final fallback)
+```
+
+**Formats supporting Vision OCR:**
+
+| Format | Description |
+|--------|-------------|
+| `.png`, `.jpg`, `.jpeg` | Sent directly to Vision model |
+| `.pdf` (scanned) | Fallback when Marker returns empty text |
+
+## API Key Configuration
+
+### Basic Setup
+
+```bash
+# .env.local
+GOOGLE_GENERATIVE_AI_API_KEY=AIzaSy...
+```
+
+All Gemini models share a single API Key.
+
+### OAuth Token Mode (Optional)
+
+```bash
+USE_OAUTH=true
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+```
+
+One-time authorization required before use:
+
+```bash
+npx gemini init
+```
+
+OAuth mode is suitable for scenarios requiring higher quotas or Google Workspace integration.
+
+## Streaming Configuration
+
+AI chat uses Vercel AI SDK's `streamText` for streaming responses:
+
+| Item | Value |
+|------|-------|
+| SDK | `ai` v6 (Vercel AI SDK) |
+| Stream Delay | 5 ms |
+| Chunking Method | `Intl.Segmenter` (Unicode grapheme) |
+| Support | CJK character-by-character streaming, Emoji integrity |
+| Route Timeout | 300 seconds (`maxDuration`) |
+| Heartbeat Interval | 15 seconds (prevents connection timeout) |
+
+### SSE Heartbeat Mechanism
+
+Long-running research tasks periodically send heartbeat signals to prevent connection timeouts from reverse proxies (like Nginx) or NAS environments:
+
+```
+Every 15 seconds sends an SSE heartbeat (empty comment)
+→ Keeps HTTP connection alive
+→ Heartbeat timer cleared when task completes
+```
+
+
+
+## Observability (Langfuse)
+
+Set the following environment variables to enable AI call tracing:
+
+```bash
+LANGFUSE_PUBLIC_KEY=pk-...
+LANGFUSE_SECRET_KEY=sk-...
+LANGFUSE_BASEURL=https://cloud.langfuse.com  # or self-hosted endpoint
+```
+
+Once enabled, you can see in the Langfuse Dashboard:
+
+- Token usage per AI call
+- Latency and success rates
+- Prompt version tracking
+- Cost analysis

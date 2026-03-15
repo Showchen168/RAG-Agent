@@ -1,0 +1,136 @@
+---
+title: 知識管理
+description: 多格式文件上傳、向量嵌入、知識圖譜、版本控制與自動監控
+---
+
+## 概述
+
+知識管理是 NexusMind 的核心。上傳文件後，系統會自動完成三件事：
+
+1. **解析內容** — 透過 Marker 微服務或內建 Parser 提取文字
+2. **向量嵌入** — 使用 Gemini Embedding（768 維）儲存至 pgvector
+3. **圖譜建立** — 在 LightRAG 中建立實體關係
+
+## 支援的上傳格式
+
+| 格式 | 副檔名 | 解析方式 | 說明 |
+|------|--------|----------|------|
+| PDF | `.pdf` | Marker 微服務 → 內建 `pdf-parse`（降級） | 支援文字型 PDF；圖片型自動降級至 Gemini Vision OCR |
+| Word | `.docx` | Marker 微服務 → 內建 `mammoth`（降級） | 轉 HTML 再轉 Markdown，保留標題、列表、表格結構 |
+| PowerPoint | `.pptx` | Marker 微服務 → 內建 `officeparser`（降級） | 提取所有投影片文字 |
+| Excel | `.xlsx`, `.xls` | Marker 微服務 → 內建 `xlsx`（降級） | 各工作表轉 CSV 格式 |
+| 純文字 | `.txt`, `.md` | 原生解析 | 直接讀取 |
+| 圖片 | `.png`, `.jpg`, `.jpeg` | Gemini Vision OCR | AI 辨識圖片中的文字 |
+
+**檔案大小上限：50 MB**
+
+### 降級機制
+
+```
+Marker 微服務可用？
+  ├─ 是 → 使用 Marker 解析
+  │       └─ Marker 返回空文字？
+  │           ├─ 是 → 嘗試 Gemini Vision OCR
+  │           │       └─ OCR 失敗 → 使用內建 Parser
+  │           └─ 否 → 使用 Marker 結果
+  └─ 否 → 使用內建 Parser（pdf-parse / mammoth / officeparser / xlsx）
+```
+
+## 上傳流程
+
+1. 進入 **Knowledge** 頁面，點擊「上傳」按鈕
+2. 選擇檔案（支援多檔批次上傳）
+3. 系統自動完成以下處理：
+   - 透過 Marker 微服務解析文件內容
+   - 文字分段（chunking）
+   - 使用 `gemini-embedding-001` 產生 768 維向量
+   - 儲存至 Supabase `document_sections` 表（pgvector）
+   - 同步索引至 LightRAG 知識圖譜
+
+## YouTube 整合
+
+除了檔案上傳，NexusMind 能自動擷取 YouTube 內容並加入知識庫：
+
+| 類型 | 操作 | 說明 |
+|------|------|------|
+| 單一影片 | 貼上 YouTube 影片連結 | 自動擷取字幕轉為文件 |
+| 播放清單 | 貼上播放清單連結 | 批次導入所有影片字幕 |
+| 頻道 | 輸入頻道 ID | 自動爬取最新影片字幕 |
+
+## URL 爬取
+
+貼上任意網頁 URL，系統會自動擷取網頁內容（HTML → 純文字），處理流程與檔案上傳相同。
+
+## 知識圖譜
+
+基於 **LightRAG GraphRAG** 技術，自動從文件中提取實體與關係：
+
+### LightRAG 整合
+
+| 操作 | API 端點 | 超時 |
+|------|---------|------|
+| 健康檢查 | `GET /health` | 3 秒 |
+| 索引文件 | `POST /index` | 60 秒 |
+| 查詢圖譜 | `POST /query` | 15 秒 |
+| 取得圖結構 | `POST /graph` | 15 秒 |
+
+### 視覺化
+
+使用 **Cytoscape.js** 渲染互動式知識圖譜：
+
+- 瀏覽文件之間的實體關聯
+- 點擊節點查看相關文件
+- 探索概念之間的連結
+- 顯示關係權重與類型
+
+### AI 自動推導關係
+
+`POST /api/knowledge/relations` 端點會：
+1. 計算文件之間的向量相似度
+2. 使用 Gemini 判斷關係類型（相關、補充、衝突等）
+3. 自動建立文件關聯
+
+## 語意搜尋
+
+`POST /api/knowledge/search` 提供跨文件語意搜尋：
+
+- 使用 pgvector 的 `match_document_sections` 函式
+- 匹配閾值：0.6（全域模式）/ 0.55（單文件模式）
+- RSS 來源文章閾值：0.45（因拼接導致語意稀釋）
+
+## 監控源（自動更新）
+
+設定知識源後，系統定時自動檢查更新：
+
+| 來源類型 | 說明 |
+|---------|------|
+| RSS Feed | 自動擷取新文章 |
+| 網頁 URL | 監控內容變化 |
+| YouTube 頻道 | 自動導入新影片字幕 |
+
+觸發方式：呼叫 `GET /api/cron/check-sources`（需要 `CRON_SECRET` 驗證）
+
+```bash
+# 設定 crontab 每小時檢查
+0 * * * * curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  https://your-domain/api/cron/check-sources
+```
+
+## 文件版本控制
+
+每次文件更新時，系統自動保存歷史版本：
+
+| 操作 | API 端點 |
+|------|---------|
+| 列出所有版本 | `GET /api/knowledge/:id/versions`（按版本號降序） |
+| 手動建立快照 | `POST /api/knowledge/:id/versions` |
+| 取得版本內容 | `GET /api/knowledge/:id/versions/:versionId`（用於 diff 對比） |
+| 還原到指定版本 | `POST /api/knowledge/:id/versions/:versionId/restore` |
+
+## 文件管理
+
+| 操作 | 說明 |
+|------|------|
+| 啟用/停用 | `PATCH /api/knowledge/:id` 切換 `enabled` 狀態，停用的文件不參與 RAG |
+| 刪除 | `DELETE /api/knowledge/:id` cascade 自動刪除關聯的 embeddings |
+| AI 建議 | `GET /api/knowledge/suggestions` 根據知識庫內容，AI 生成 6 個自然的對話建議 |

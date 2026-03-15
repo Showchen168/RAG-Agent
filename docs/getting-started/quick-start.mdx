@@ -1,0 +1,65 @@
+---
+title: 快速開始
+description: 5 分鐘內啟動 NexusMind
+---
+
+## 前置需求
+
+- Node.js 20+
+- pnpm
+- Docker & Docker Compose
+- Supabase 專案（雲端或自建）
+
+## 本機開發
+
+```bash title="安裝與啟動"
+# 1. Clone 專案
+git clone https://github.com/Showchen168/nexusmind.git
+cd nexusmind
+
+# 2. 安裝依賴
+pnpm install
+
+# 3. 設定環境變數
+cp .env.production.example .env.local
+# 編輯 .env.local 填入實際值
+
+# 4. 啟動開發伺服器
+pnpm dev
+```
+
+開啟 [http://localhost:3000](http://localhost:3000) 即可看到 NexusMind。
+
+## Docker 部署（NAS）
+
+```bash title="Docker 部署"
+# 1. 設定環境變數
+cp .env.production.example .env.production
+# 編輯 .env.production 填入實際值
+
+# 2. 建構映像
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+  -t nexusmind-app:latest .
+
+# 3. 啟動所有服務
+docker compose up -d
+```
+
+## 驗證安裝
+
+啟動後檢查以下服務是否正常運行：
+
+| 服務 | URL | 預期回應 |
+|------|-----|---------|
+| 主應用 | `http://localhost:3000` | NexusMind 首頁 |
+| Marker | `http://localhost:8001/health` | `{"status": "ok"}` |
+| LightRAG | `http://localhost:8002/health` | `{"status": "ok"}` |
+| Skill Executor | `http://localhost:8003/health` | `{"status": "ok"}` |
+
+## 下一步
+
+- 前往[環境變數設定](/docs/getting-started/environment)了解完整配置
+- 開始使用 [AI 對話](/docs/features/chat)功能
+- 上傳你的第一份文件到[知識庫](/docs/features/knowledge)

@@ -1,0 +1,30 @@
+{
+  "name": "skill-executor-service",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NexusMind Skill Executor - Docker container lifecycle management",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest --no-coverage",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.5",
+    "express": "^5.1.0",
+    "tar-stream": "^3.1.7",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.35",
+    "@types/express": "^5.0.2",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.0.0",
+    "@types/tar-stream": "^3.1.4",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.6",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.0"
+  }
+}

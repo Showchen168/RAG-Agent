@@ -1,0 +1,213 @@
+---
+title: Supabase Setup
+description: Database configuration, migration management, RLS policies, and pgvector setup
+---
+
+## Overview
+
+NexusMind uses **Supabase** as its backend infrastructure, providing PostgreSQL database, Auth authentication, Row Level Security, and real-time API. The database has **pgvector** extension enabled for vector search.
+
+## Choosing a Deployment Method
+
+### Supabase Cloud (Recommended)
+
+Best for quick start, zero maintenance:
+
+1. Go to [supabase.com](https://supabase.com) and create a project
+2. Obtain Project URL, Anon Key, and Service Role Key
+3. Add them to `.env.local` or `.env.production`
+
+| Pros | Cons |
+|------|------|
+| Zero maintenance, automatic backups | Free plan has limits (500 MB, 50K rows) |
+| Built-in Dashboard | Data in the cloud |
+| Automatic SSL | Latency depends on region |
+
+### Self-Hosted Supabase (NAS / Local)
+
+Best for high data privacy requirements or intranet deployment:
+
+```bash
+# Using Supabase CLI
+npx supabase start
+
+# Default endpoints
+# API: http://127.0.0.1:54321
+# Studio: http://127.0.0.1:54323
+# DB: postgresql://postgres:postgres@127.0.0.1:54322/postgres
+```
+
+| Pros | Cons |
+|------|------|
+| Data stays local | Requires self-maintenance and backups |
+| No capacity limits | Requires more system resources |
+| Low intranet latency | Requires reverse proxy setup (HTTPS) |
+
+### Dual URL Strategy for Docker Environments
+
+In NAS Docker deployment, the browser uses public HTTPS while the server uses internal HTTP:
+
+```bash
+# .env.production
+NEXT_PUBLIC_SUPABASE_URL=https://supabase.your-domain.com  # Browser (public HTTPS)
+SUPABASE_SERVER_URL=http://192.168.0.7:54321               # Server (internal HTTP)
+```
+
+The system automatically handles cookie name consistency (see [Authentication & Login](/docs/getting-started/authentication)).
+
+## Migration Management
+
+NexusMind uses Supabase Migration to manage database schema. Currently **28 migration files**.
+
+### Running Migrations
+
+```bash
+# Local development (using Supabase CLI)
+npx supabase migration up --local
+
+# Cloud project
+npx supabase db push
+```
+
+### Migration History Overview
+
+| Date | Major Changes |
+|------|---------------|
+| 2/10 | Core tables (conversations, messages, documents) |
+| 2/13 | Knowledge graph + semantic search functions |
+| 2/14 | Canvas documents table |
+| 2/17 | Reports system table |
+| 2/20 | BM25 full-text search (tsvector) |
+| 2/24-25 | Telegram integration tables (telegram_users, bot_config, link_codes) |
+| 2/26 | Skills system tables (skills, skill_attachments) |
+| 3/1 | Skill preference tracking |
+| 3/2 | RAG transparency metadata |
+
+### Creating New Migrations
+
+```bash
+# Create empty migration
+npx supabase migration new my_feature_name
+
+# Edit the SQL file
+# supabase/migrations/YYYYMMDDHHMMSS_my_feature_name.sql
+
+# Apply locally
+npx supabase migration up --local
+```
+
+> **Safety Reminder**: Always use `migration up --local`. **Never** use `supabase db reset` (it deletes all data).
+
+## pgvector Configuration
+
+### Vector Search Setup
+
+| Item | Value |
+|------|-------|
+| Extension | `pgvector` |
+| Vector Dimensions | 768 (Gemini embedding-001) |
+| Index Type | HNSW |
+| Index Parameters | `m=16, ef_construction=64` |
+| Similarity Algorithm | cosine (`vector_cosine_ops`) |
+
+### Search Functions
+
+```sql
+-- Vector similarity search
+match_documents(query_embedding vector, threshold float, count int)
+
+-- BM25 full-text search
+match_documents_bm25(query_text text, count int, user_id uuid)
+
+-- Single-document semantic search
+match_document_sections(query_embedding vector, ...)
+```
+
+### Embedding Vector Storage
+
+Embedding vectors are automatically generated when documents are uploaded:
+
+```
+Document content → Chunking → gemini-embedding-001 → 768-dim vector → document_embeddings table
+```
+
+Each chunk also generates a `tsvector` (for BM25 search), enabling dual vector semantic + keyword search.
+
+## Core Table Architecture
+
+### Users & Authentication
+
+| Table | Description | RLS |
+|-------|-------------|-----|
+| `auth.users` | Supabase built-in users table | — |
+| `profiles` | Extended info (display name, preferred model, system prompt) | Own data only |
+
+### Conversations & Messages
+
+| Table | Description | Key Fields |
+|-------|-------------|------------|
+| `conversations` | Conversation records | `parent_conversation_id` (forking), `model` |
+| `messages` | Message records | `metadata` JSONB (RAG transparency) |
+
+### Knowledge Base
+
+| Table | Description | Key Fields |
+|-------|-------------|------------|
+| `documents` | Knowledge base documents | `enabled` (whether to include in RAG) |
+| `document_embeddings` | Vector embeddings | `embedding` vector(768), `fts` tsvector |
+| `document_relations` | Document relations | `relation_type`, `strength` |
+| `document_versions` | Version history | `version_number`, `change_description` |
+| `knowledge_sources` | Monitoring sources | `source_type` (rss/url/youtube) |
+
+### Feature Tables
+
+| Table | Description |
+|-------|-------------|
+| `canvas_documents` | Canvas rich text documents (TipTap JSON) |
+| `research_sessions` | Research sessions |
+| `reports` | Reports (Markdown) |
+| `skills` | Skill definitions (`skill_config` JSONB) |
+| `skill_attachments` | Skill output files |
+| `prompt_templates` | Prompt templates |
+| `assistant_presets` | AI assistant preset roles |
+| `user_memories` | User memories |
+
+### Telegram Related
+
+| Table | RLS | Description |
+|-------|-----|-------------|
+| `telegram_users` | service_role | Account binding mapping |
+| `telegram_bot_config` | Authenticated read | Bot token encrypted storage |
+| `telegram_link_codes` | service_role | Temporary binding codes |
+
+## RLS Policy Design Principles
+
+All user data tables have RLS enabled, following the principle of least privilege:
+
+1. **Direct Ownership**: `WHERE user_id = auth.uid()` (profiles, documents, conversations)
+2. **Indirect Access**: Validated via JOIN on parent table (messages → conversations → user_id)
+3. **Public + Private**: `WHERE user_id = auth.uid() OR is_public = true` (prompt_templates)
+4. **Service Role Only**: Telegram-related tables can only be operated by backend Admin Client
+
+## Backup Recommendations
+
+### Supabase Cloud
+
+- Automatic daily backups (Pro plan)
+- Manual backup available via Dashboard
+
+### Self-Hosted Supabase
+
+```bash
+# Backup using pg_dump
+pg_dump -h 127.0.0.1 -p 54322 -U postgres -d postgres > backup.sql
+
+# Restore
+psql -h 127.0.0.1 -p 54322 -U postgres -d postgres < backup.sql
+```
+
+Recommended crontab for automatic daily backups:
+
+```bash
+0 3 * * * pg_dump -h 127.0.0.1 -p 54322 -U postgres -d postgres | gzip > /backup/nexusmind_$(date +\%Y\%m\%d).sql.gz
+```

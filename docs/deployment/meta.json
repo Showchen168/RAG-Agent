@@ -1,0 +1,4 @@
+{
+  "title": "部署與維運",
+  "pages": ["architecture", "supabase", "pages", "troubleshooting"]
+}

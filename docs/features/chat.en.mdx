@@ -1,0 +1,173 @@
+---
+title: AI Chat System
+description: RAG-enhanced intelligent conversations — every answer is grounded and traceable
+---
+
+## Overview
+
+NexusMind's AI chat is built on **Vercel AI SDK v6** for streaming conversations, defaulting to Google's **Gemini 3 Flash Preview** model with switchable options for **Gemini 3.1 Pro Preview** (advanced reasoning) and **Gemini 3.1 Flash Lite Preview** (lightweight fast). Unlike typical AI chatbots, NexusMind automatically references your knowledge base to answer questions (RAG-enhanced), ensuring every answer is grounded and traceable.
+
+| Item | Value |
+|------|-------|
+| Default Model | `gemini-3-flash-preview` (switchable to Pro / Lite) |
+| Max Reasoning Steps | 5 steps (including Google Search tool calls) |
+| Route Timeout | `maxDuration = 300` seconds |
+| Stream Delay | 5ms (Unicode grapheme segmentation, CJK character streaming) |
+
+## Starting a Conversation
+
+1. Click **Chat** in the left navigation bar to enter the chat page
+2. Type your question in the input box
+3. AI will automatically search your knowledge base and combine retrieval results in its response
+
+## Adaptive RAG Three-Layer Retrieval
+
+NexusMind uses a three-layer retrieval strategy to find the most relevant information:
+
+1. **Vector Search** (pgvector) — Uses `gemini-embedding-001` (768-dim) for semantic similarity matching
+2. **BM25 Keyword Search** — Full-text search based on `tsvector`, precisely finds specific terms
+3. **LightRAG Graph Query** — Retrieval through knowledge graph entity relationships (hybrid mode), discovering implicit connections
+
+Results from all three layers are merged using **Reciprocal Rank Fusion (RRF)**, `RRF_K = 60`.
+
+### RAG Threshold Settings
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| `RAG_MATCH_THRESHOLD` | 0.6 | Global vector match threshold |
+| `DOC_SECTION_MATCH_THRESHOLD` | 0.55 | Single document mode threshold |
+| `RSS_MATCH_THRESHOLD` | 0.45 | RSS sources (multi-article concatenation, semantic dilution) |
+| `HIGH_SIMILARITY_THRESHOLD` | 0.78 | Above this value, skip LLM grading |
+| `RAG_MATCH_COUNT` | 12 | Results returned per search |
+| `MAX_RELEVANT_DOCUMENTS` | 3 | Final relevant documents returned |
+
+### Dynamic Context Budget
+
+The system automatically adjusts retrieval scope based on query complexity:
+
+| Query Type | Condition | maxDocs | maxChunksPerDoc |
+|------------|-----------|---------|-----------------|
+| Complex Analysis | Contains analysis keywords | 5 | 10 |
+| Medium Query | Over 50 characters | 3 | 6 |
+| Short Query | Under 10 characters | 1 | 3 |
+| Default | Other | 3 | 6 |
+
+### Timeout Protection
+
+| Layer | Timeout |
+|-------|---------|
+| RAG Total | 12,000 ms |
+| LightRAG Graph Query | 5,000 ms |
+| Grading + Retry | 5,000 ms |
+| Memory Retrieval | 5,000 ms |
+
+All retrieval layers have timeout protection — failure in any layer does not affect the main conversation flow.
+
+## System Prompt Composition
+
+The AI's system prompt is composed of 9 layers in sequence:
+
+| Layer | Name | Description |
+|-------|------|-------------|
+| 1 | Base Prompt | Injects current date, persona definition, Grounding strategy |
+| 2 | Response Style | Infers style based on user message (structured/concise/Markdown) |
+| 3 | Knowledge Prompt | Injects citation format standards when RAG results available |
+| 4 | Knowledge Quality Signals | Credibility and freshness assessment per document (internal reference) |
+| 5 | Custom Instructions | User's custom system prompt (`profiles.system_prompt`) |
+| 6 | Memory Context | Saved facts, preferences, behaviors |
+| 7 | Skill Index | User's enabled skill list |
+| 8 | Freshness Directive | Forces Google Search when necessary |
+| 9 | Markdown Format | Structured output guidelines |
+
+### Knowledge Quality Assessment
+
+Each retrieved document is annotated with:
+
+- **Credibility**: High (high semantic match), Medium (related but not core), Low (partially related)
+- **Freshness**: Latest (≤30 days), Recent (≤180 days), Outdated (>180 days)
+- **Source Weighting**: Internal documents +0.04, External documents -0.02
+
+## AI Memory System
+
+The system automatically extracts and remembers user preferences and behavior patterns from conversations.
+
+### Memory Extraction Categories
+
+| Category | Importance | Trigger Pattern Examples |
+|----------|------------|------------------------|
+| Preference | 0.7 | "I like...", "I prefer...", "I usually..." |
+| Fact | 0.6 | "I am...", "I work at...", "My..." |
+| Behavior | 0.5 | "Every time...", "Usually I...", "I often..." |
+
+### Memory Deduplication
+
+Uses a three-layer deduplication strategy (Bigram Jaccard similarity threshold 0.6):
+1. Substring containment check
+2. Bigram similarity check (≥ 0.6)
+3. Filter duplicate content
+
+### Memory Retrieval
+
+| Parameter | Value |
+|-----------|-------|
+| Search Threshold | 0.5 |
+| Max Results | 10 |
+| Weighting Formula | `similarity × 0.7 + importance × 0.3` |
+
+## RAG Transparency Panel
+
+After each AI response, you can expand the "Citation Sources" panel to view:
+
+- Which documents the AI referenced
+- Relevance score and credibility for each citation
+- Retrieval method (local / web / hybrid)
+- Whether graph context was used
+- Original query and number of rewrites
+
+Transparency data is stored in `messages.metadata.rag_transparency`.
+
+## Conversation Features
+
+| Feature | Description |
+|---------|-------------|
+| **Conversation Forking** | Create a new conversation branch from any message (`parent_conversation_id` + `fork_from_message_id`) |
+| **Conversation Export** | Export as DOCX (docx v9), PPTX (pptxgenjs), PDF (Playwright rendering) |
+| **Inline Suggestions** | Auto-generates 1-3 quick follow-up questions after conversation (≤15 chars, 8s timeout) |
+| **Thinking Progress Animation** | Real-time display of AI reasoning steps and elapsed time |
+| **Prompt Library** | Save and reuse common prompt templates (supports public sharing) |
+| **Assistant Presets** | 5 built-in roles: General, Writing, Coding, Analysis, Creative |
+| **Save as Report** | Save AI responses as Canvas reports (first 60 chars as title) |
+
+## Streaming & Persistence
+
+### Streaming Configuration
+
+```
+smoothStream:
+  delayInMs: 5
+  chunking: Intl.Segmenter (Unicode grapheme segmentation)
+```
+
+### Message Persistence Strategy
+
+The system uses three-layer logic to ensure correct message storage:
+1. Latest message is assistant with content → overwrite (isFinal)
+2. Latest message is assistant but empty → fill in
+3. Latest message is user → insert new assistant message
+
+## Complete Flow
+
+```
+User message → Parallel launch:
+├─ RAG query (12s timeout)
+│  ├─ Vector search + BM25 (RRF fusion)
+│  ├─ LightRAG graph query (5s timeout)
+│  └─ Grading + Retry (5s timeout)
+├─ Memory retrieval (5s timeout)
+└─ Save user message (non-blocking)
+
+Compose system prompt (9 layers) → streamText → onFinish:
+├─ Save final response + RAG metadata
+├─ Async generate Inline Suggestions
+└─ Async memory extraction (non-blocking)
+```

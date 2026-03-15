@@ -1,0 +1,265 @@
+---
+title: Microservice Architecture
+description: NexusMind's 4 microservices and Docker Compose deployment
+---
+
+## Architecture Overview
+
+NexusMind consists of 4 microservices, managed with Docker Compose:
+
+| Service | Container Name | Port | Memory | Base Image | Function |
+|---------|---------------|------|--------|------------|----------|
+| **app** | nexusmind-app | 3000 | 1 GB | node:20-alpine | Next.js main application (66+ API endpoints) |
+| **marker** | nexusmind-marker | 8001 | 1 GB | python:3.11-slim | Document parsing (PDF/DOCX/PPTX/XLSX) |
+| **lightrag** | nexusmind-lightrag | 8002 | 2 GB | python:3.11-slim | GraphRAG knowledge graph |
+| **skill-executor** | nexusmind-skill-executor | 8003 | 512 MB | node:20-slim | Docker-in-Docker skill execution sandbox |
+
+## Main Application (app)
+
+A three-stage Docker build Next.js 16 full-stack application.
+
+### Build Stages
+
+| Stage | Base Image | Description |
+|-------|-----------|-------------|
+| deps | node:20-alpine | pnpm install --frozen-lockfile |
+| builder | node:20-alpine | Inject Build Args → pnpm build |
+| runner | node:20-alpine | Non-root execution (nextjs:1001), `node server.js` |
+
+### Build Args (Injected at Build Time)
+
+```bash
+docker build \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+  --build-arg NEXT_PUBLIC_TELEGRAM_BOT_USERNAME=$NEXT_PUBLIC_TELEGRAM_BOT_USERNAME \
+  -t nexusmind-app:latest .
+```
+
+`NEXT_PUBLIC_*` variables are baked into `.next/standalone` at build time and cannot be overridden at runtime.
+
+### Main API Groups
+
+| Group | Endpoint Examples | Route Count |
+|-------|------------------|-------------|
+| Chat | `/api/chat`, `/api/conversations/*` | ~7 |
+| Knowledge | `/api/knowledge/*`, `/api/knowledge/upload` | ~14 |
+| Skills | `/api/skills/*`, `/api/skills/execute` | ~8 |
+| Canvas | `/api/canvas/*`, `/api/reports/*` | ~8 |
+| Telegram | `/api/telegram/webhook`, `/api/telegram/link` | ~5 |
+| Copilot | `/api/copilot/completion`, `/api/copilot/command` | 2 |
+| System | `/api/cron/check-sources`, `/api/services/health` | ~2 |
+
+## Marker Microservice
+
+A Python/FastAPI application responsible for parsing various document formats.
+
+| Item | Value |
+|------|-------|
+| Framework | FastAPI + Uvicorn |
+| Core Dependencies | pymupdf4llm, python-pptx, openpyxl |
+| Supported Formats | PDF, DOCX, PPTX, XLSX, HTML, EPUB |
+| Keep-Alive | 300 seconds |
+
+### Health Check
+
+```
+GET /health → 200 OK
+Interval: 30s | Timeout: 10s | Retries: 3 | Start Delay: 30s
+```
+
+## LightRAG Microservice
+
+A Python application responsible for GraphRAG knowledge graph construction and querying.
+
+| Item | Value |
+|------|-------|
+| Framework | FastAPI + Uvicorn |
+| Core Dependencies | lightrag-hku 1.3.8, google-genai, networkx |
+| Embedding Model | `gemini-embedding-001` (768 dimensions) |
+| LLM Model | `gemini-2.0-flash` |
+| Query Mode | hybrid (vector + graph) |
+
+### Persistence
+
+Uses Docker Named Volume `lightrag-data` mounted at `/app/data`, storing NetworkX graph database and embedding vectors.
+
+### Health Check
+
+```
+GET /health → 200 OK
+Interval: 30s | Timeout: 10s | Retries: 3 | Start Delay: 30s
+```
+
+## Skill Executor Microservice
+
+A Node.js application that controls Docker daemon via Dockerode to create skill execution containers.
+
+| Item | Value |
+|------|-------|
+| Framework | Express 5 |
+| Core Dependencies | dockerode 4, tar-stream 3, zod |
+| Image Allowlist | node:, python:, alpine:, ubuntu:, nexusmind-skill-runtime: |
+| Default Timeout | 60 seconds (max 300 seconds) |
+| Default Memory | 512 MB |
+
+### Skill Runtime Image
+
+Based on `nikolaik/python-nodejs:python3.11-nodejs20-slim`, pre-installed:
+- npm: `docx` (Word document generation)
+- Python: `defusedxml`, `lxml`
+
+### Security Settings
+
+| Setting | Value |
+|---------|-------|
+| Network | `NetworkMode: none` (fully isolated) |
+| Capability | `CapDrop: ALL` |
+| Swap | Disabled (MemorySwap = Memory) |
+| Path Validation | Path traversal attack prevention |
+
+### Health Check
+
+```
+GET /health → 200 OK
+Interval: 30s | Timeout: 10s | Retries: 3 | Start Delay: 15s
+```
+
+## Inter-Service Communication
+
+All services communicate through a Docker bridge network:
+
+| Direction | Protocol | Port | Purpose |
+|-----------|----------|------|---------|
+| app → marker | HTTP | 8001 | Document parsing |
+| app → lightrag | HTTP | 8002 | Knowledge graph queries |
+| app → skill-executor | HTTP | 8003 | Skill execution |
+| skill-executor → Docker | Unix Socket | — | Container lifecycle management |
+| External → app | HTTP/HTTPS | 3000 | User access |
+
+### Health Check Chain
+
+The app service waits for all dependent services to reach healthy status before starting:
+
+```
+depends_on:
+  marker:         condition: service_healthy
+  lightrag:       condition: service_healthy
+  skill-executor: condition: service_healthy
+```
+
+### Health Status API
+
+`GET /api/services/health` returns the status and latency of each microservice:
+
+```json
+{
+  "marker": { "available": true, "latency": 45 },
+  "lightrag": { "available": true, "latency": 120 }
+}
+```
+
+## Volume Mounts
+
+### Named Volumes
+
+| Volume | Mount Point | Description |
+|--------|-------------|-------------|
+| `lightrag-data` | `/app/data` (lightrag) | Knowledge graph persistence |
+| `skills-data` | `/data/skills` (skill-executor) | Skill execution result staging |
+
+### Bind Mounts
+
+| Source | Target | Description |
+|--------|--------|-------------|
+| `/var/run/docker.sock` | `/var/run/docker.sock` (skill-executor) | Docker daemon communication |
+
+## Database Architecture
+
+Using **Supabase** PostgreSQL with pgvector extension enabled. 30+ migration files, 35+ core tables.
+
+### pgvector Configuration
+
+| Item | Value |
+|------|-------|
+| Vector Dimensions | 768 (Gemini embedding-001) |
+| Index Type | HNSW (m=16, ef_construction=64) |
+| Similarity Algorithm | cosine (`vector_cosine_ops`) |
+
+### Core Tables Overview
+
+| Table | Description | RLS |
+|-------|-------------|-----|
+| `profiles` | User extended info (display name, preferred model) | Own data only |
+| `conversations` | Conversation records (supports forking: `parent_conversation_id`) | Own data only |
+| `messages` | Message records (includes `metadata` JSONB: RAG transparency) | Via conversations |
+| `documents` | Knowledge base documents (title, content, summary, tags) | Own data only |
+| `document_embeddings` | Vector search (768-dim + BM25 tsvector) | Via documents |
+| `document_relations` | Document relations (source, target, type, strength) | Own data only |
+| `document_versions` | Version history (version number, change description) | Own data only |
+| `personas` | Custom AI roles (with exact prompts and icons) | Own data only |
+| `prompt_templates` | Prompt library (shared ones public) | By share status |
+| `reports` | Reports (Markdown content) | Own data only |
+| `skills` | Skill definitions (`skill_config` JSONB) | Own + system skills |
+| `skill_attachments` | Skill output files (FK → messages) | Via conversations |
+| `skill_user_preferences` | Skill preferences (favorites, usage count) | Own data only |
+| `prompt_templates` | Prompt templates (supports public sharing) | Own + public |
+| `prompt_favorites` | Prompt favorites | Own data only |
+| `assistant_presets` | AI assistant presets (5 built-in roles) | Authenticated read |
+| `telegram_users` | Telegram account binding | service_role |
+| `telegram_bot_config` | Bot config (encrypted token storage) | Authenticated read, service_role write |
+| `telegram_link_codes` | Temporary binding codes | service_role |
+| `user_memories` | User memories (preference/fact/behavior/context, 768-dim vectors) | Own only |
+| `user_skill_preferences` | User skill preferences (personalized enable/disable) | Own only |
+| `audit_logs` | Security audit logs | service_role |
+| `gdrive_user_tokens` | Google Drive OAuth tokens (encrypted storage) | Own data only |
+
+### Key Search Functions
+
+| Function | Purpose |
+|----------|---------|
+| `match_documents(query_embedding, threshold, count)` | Vector similarity search |
+| `match_documents_bm25(query_text, count, user_id)` | BM25 full-text search |
+| `match_document_sections(...)` | Single-document semantic search |
+| `search_user_memories(user_id, query_embedding, threshold, max_results)` | User memory semantic search |
+
+## Deployment Commands
+
+### Docker Compose Deployment
+
+```bash
+# Copy environment variables
+cp .env.production.example .env.production
+# Edit with actual values
+
+# Build and start all services
+docker compose --env-file .env.production up -d --build
+
+# Verify health status
+docker compose ps
+curl http://localhost:3000/api/services/health
+```
+
+### NAS Standalone Build
+
+```bash
+# Build main app (inject Build Args)
+docker build --no-cache \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=https://your-supabase.com \
+  --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key \
+  -t nexusmind-app:latest .
+
+# Update container
+docker compose stop app && docker compose rm -f app
+docker compose up -d app
+```
+
+### Cross-Platform Build
+
+For building AMD64 images from Apple Silicon (ARM):
+
+```bash
+docker buildx build --platform linux/amd64 \
+  --build-arg NEXT_PUBLIC_SUPABASE_URL=... \
+  -t nexusmind-app:latest --load .
+```
